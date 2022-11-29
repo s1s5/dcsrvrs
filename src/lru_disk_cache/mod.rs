@@ -109,7 +109,7 @@ pub trait ReadSeek: Read + Seek + Send {}
 
 impl<T: Read + Seek + Send> ReadSeek for T {}
 
-enum AddFile<'a> {
+pub enum AddFile<'a> {
     AbsPath(PathBuf),
     RelPath(&'a OsStr),
 }
@@ -159,7 +159,7 @@ impl LruDiskCache {
     }
 
     /// Return the path that `key` would be stored at.
-    fn rel_to_abs_path<K: AsRef<Path>>(&self, rel_path: K) -> PathBuf {
+    pub fn rel_to_abs_path<K: AsRef<Path>>(&self, rel_path: K) -> PathBuf {
         self.root.join(rel_path)
     }
 
@@ -188,7 +188,7 @@ impl LruDiskCache {
     }
 
     /// Add the file at `path` of size `size` to the cache.
-    fn add_file(&mut self, addfile_path: AddFile<'_>, size: u64) -> Result<()> {
+    pub fn add_file(&mut self, addfile_path: AddFile<'_>, size: u64) -> Result<()> {
         if !self.can_store(size) {
             return Err(Error::FileTooLarge);
         }
