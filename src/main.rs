@@ -1,11 +1,38 @@
-use dcsrvrs::lru_disk_cache::{AddFile, LruDiskCache};
+#[macro_use]
+extern crate rocket;
+use dcsrvrs::lru_disk_cache::{lru_cache, AddFile, LruDiskCache};
+use envy;
 use path_clean::PathClean;
+use rocket::serde::{json::Json, Serialize};
 use rocket::{
     data::ToByteUnit, fs::NamedFile, http::Status, response::status::NotFound, Data, State,
 };
+use serde::Deserialize;
 use std::{fs, path::PathBuf, sync::Mutex};
-#[macro_use]
-extern crate rocket;
+
+#[derive(Deserialize, Debug)]
+struct Config {
+    #[serde(default = "default_cache_dir")]
+    cache_dir: String,
+
+    #[serde(default = "default_size_limit")]
+    size_limit: u64,
+
+    #[serde(default = "default_file_size_limit")]
+    file_size_limit: u64,
+}
+
+fn default_cache_dir() -> String {
+    "/tmp/dcsrvrs".into()
+}
+
+fn default_size_limit() -> u64 {
+    1073741824
+}
+
+fn default_file_size_limit() -> u64 {
+    134217728
+}
 
 fn path2key(path: PathBuf) -> PathBuf {
     // TODO: 「../」とかで始まるパスの扱い
@@ -36,6 +63,7 @@ async fn put_data(
     data: Data<'_>,
     path: PathBuf,
     lru_cache_state: &State<Mutex<LruDiskCache>>,
+    config: &State<Config>,
 ) -> Status {
     let key = path2key(path);
     let abs_path = {
@@ -48,9 +76,15 @@ async fn put_data(
         Ok(_) => {}
         Err(_error) => return Status::InternalServerError,
     };
-    match data.open(128.kibibytes()).into_file(&abs_path).await {
+    match data
+        .open(config.file_size_limit.bytes())
+        .into_file(&abs_path)
+        .await
+    {
         Ok(_file) => {}
-        Err(_error) => return Status::InternalServerError,
+        Err(_error) => {
+            return Status::InternalServerError;
+        }
     };
     {
         let mut lru_cache = lru_cache_state.lock().unwrap();
@@ -61,7 +95,7 @@ async fn put_data(
         }
     }
 
-    Status::Accepted
+    Status::Ok
 }
 
 #[delete("/<path..>")]
@@ -72,18 +106,38 @@ async fn delete_data(path: PathBuf, lru_cache_state: &State<Mutex<LruDiskCache>>
         lru_cache.remove(key)
     } {
         Ok(r) => match r {
-            Some(_) => Status::Accepted,
+            Some(_) => Status::Ok,
             None => Status::NotFound,
         },
         Err(_error) => Status::InternalServerError,
     }
 }
 
+#[derive(Serialize)]
+#[serde(crate = "rocket::serde")]
+struct ServerStatus {
+    size: u64,
+    len: usize,
+    capacity: u64,
+}
+
+#[get("/-/healthcheck")]
+fn healthcheck(lru_cache_state: &State<Mutex<LruDiskCache>>) -> Json<ServerStatus> {
+    let lru_cache = lru_cache_state.lock().unwrap();
+    Json(ServerStatus {
+        size: lru_cache.size(),
+        len: lru_cache.len(),
+        capacity: lru_cache.capacity(),
+    })
+}
+
 #[launch]
 fn rocket() -> _ {
-    // build_server()
-    let lru_cache = Mutex::new(LruDiskCache::new("/tmp/dcsrvrs", 1 << 30).unwrap());
+    let config = envy::from_env::<Config>().unwrap();
+    let lru_cache =
+        Mutex::new(LruDiskCache::new(config.cache_dir.clone(), config.size_limit).unwrap());
     rocket::build()
-        .mount("/", routes![get_data, put_data, delete_data])
+        .mount("/", routes![get_data, put_data, delete_data, healthcheck])
         .manage(lru_cache)
+        .manage(config)
 }

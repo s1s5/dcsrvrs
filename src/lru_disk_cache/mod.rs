@@ -246,7 +246,7 @@ impl LruDiskCache {
 
 #[cfg(test)]
 mod tests {
-    use super::{LruDiskCache};
+    use super::LruDiskCache;
 
     use filetime::{set_file_times, FileTime};
     use std::fs::{self, File};
