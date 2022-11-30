@@ -282,6 +282,19 @@ impl LruDiskCache {
         self.lru.contains_key(key.as_ref())
     }
 
+    pub fn get_filename<K: AsRef<OsStr>>(&mut self, key: K) -> Result<PathBuf> {
+        let rel_path = key.as_ref();
+        let path = self.rel_to_abs_path(rel_path);
+        self.lru
+            .get(rel_path)
+            .ok_or(Error::FileNotInCache)
+            .and_then(|_| {
+                let t = FileTime::now();
+                set_file_times(&path, t, t)?;
+                Ok(path)
+            })
+    }
+
     /// Get an opened `File` for `key`, if one exists and can be opened. Updates the LRU state
     /// of the file if present. Avoid using this method if at all possible, prefer `.get`.
     pub fn get_file<K: AsRef<OsStr>>(&mut self, key: K) -> Result<File> {
