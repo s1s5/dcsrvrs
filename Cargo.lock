@@ -216,6 +216,7 @@ dependencies = [
  "log",
  "path-clean",
  "rocket",
+ "tempfile",
  "uuid",
  "walkdir",
 ]

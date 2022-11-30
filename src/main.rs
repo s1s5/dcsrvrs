@@ -64,11 +64,26 @@ async fn put_data(
     Status::Accepted
 }
 
+#[delete("/<path..>")]
+async fn delete_data(path: PathBuf, lru_cache_state: &State<Mutex<LruDiskCache>>) -> Status {
+    let key = path2key(path);
+    match {
+        let mut lru_cache = lru_cache_state.lock().unwrap();
+        lru_cache.remove(key)
+    } {
+        Ok(r) => match r {
+            Some(_) => Status::Accepted,
+            None => Status::NotFound,
+        },
+        Err(_error) => Status::InternalServerError,
+    }
+}
+
 #[launch]
 fn rocket() -> _ {
     // build_server()
     let lru_cache = Mutex::new(LruDiskCache::new("/tmp/dcsrvrs", 1 << 30).unwrap());
     rocket::build()
-        .mount("/", routes![get_data, put_data])
+        .mount("/", routes![get_data, put_data, delete_data])
         .manage(lru_cache)
 }
