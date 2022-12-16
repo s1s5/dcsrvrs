@@ -5,7 +5,13 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[workspace]
+members = [".", "entity", "migration"]
+
 [dependencies]
+entity = { path = "entity" }
+migration = { path = "migration" } # depends on your needs
+
 rocket = {version="0.5.0-rc.2", features=["json"] }
 
 walkdir = "*"
@@ -17,6 +23,14 @@ path-clean = "*"
 tempfile = "*"
 envy = "*"
 serde = { version = "*", features = ["derive"] }
+chrono  = "*"
+tokio = { version = "1.20", features = ["macros", "rt-multi-thread"] }
+tracing = "*"
+tracing-subscriber = "*"
+
+[dependencies.sea-orm]
+version = "^0"
+features = [ "sqlx-sqlite", "runtime-tokio-rustls", "macros"]
 
 [profile.release]
 strip = true
