@@ -134,8 +134,8 @@ fn healthcheck(lru_cache_state: &State<Mutex<LruDiskCache>>) -> Json<ServerStatu
 
 #[launch]
 fn rocket() -> _ {
-    let connection = sea_orm::Database::connect(&database_url).await?;
-    Migrator::up(&connection, None).await?;
+    // let connection = sea_orm::Database::connect(&database_url).await?;
+    // Migrator::up(&connection, None).await?;
     let config = envy::from_env::<Config>().unwrap();
     let lru_cache =
         Mutex::new(LruDiskCache::new(config.cache_dir.clone(), config.size_limit).unwrap());
