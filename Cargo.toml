@@ -2,6 +2,7 @@
 name = "dcsrvrs"
 version = "0.1.0"
 edition = "2021"
+default-run = "dcsrvrs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,9 +12,7 @@ members = [".", "entity", "migration"]
 [dependencies]
 entity = { path = "entity" }
 migration = { path = "migration" } # depends on your needs
-
 rocket = {version="0.5.0-rc.2", features=["json"] }
-
 walkdir = "*"
 filetime = "*"
 env_logger = "*"
@@ -27,10 +26,18 @@ chrono  = "*"
 tokio = { version = "1.20", features = ["macros", "rt-multi-thread", "io-util"] }
 tracing = "*"
 tracing-subscriber = "*"
+sqlx = { version = "0.6", features = [ "runtime-tokio-rustls" , "sqlite" ] }
 
 [dependencies.sea-orm]
 version = "^0"
 features = [ "sqlx-sqlite", "runtime-tokio-rustls", "macros"]
 
+[dependencies.uuid]
+version = "1.2.2"
+features = [
+    "v4",                # Lets you generate random UUIDs
+    "fast-rng",          # Use a faster (but still sufficiently random) RNG
+    "macro-diagnostics", # Enable better diagnostics for compile-time UUIDs
+]
 [profile.release]
 strip = true
