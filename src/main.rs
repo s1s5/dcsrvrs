@@ -43,8 +43,7 @@ fn default_file_size_limit() -> u64 {
 }
 
 fn default_blob_threshold() -> u64 {
-    // 32768
-    4
+    32768
 }
 
 fn path2key(path: PathBuf) -> PathBuf {
