@@ -1,8 +1,7 @@
 use chrono::{DateTime, Local, Utc};
 use entity::cache;
-use log::debug;
+use log::error;
 use migration::{Migrator, MigratorTrait, Order};
-use rocket::futures::TryFutureExt;
 use sea_orm::entity::ModelTrait;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, Paginator,
@@ -229,6 +228,10 @@ impl DBCache {
         let mut deleted_files: Vec<String> = Vec::new();
         let mut deleted_size: usize = 0;
 
+        if (!delete_all) && (self.capacity >= self.size) {
+            return Ok((0, 0));
+        }
+
         'outer: while let Some(el) = pages
             .fetch_and_next()
             .await
@@ -236,12 +239,16 @@ impl DBCache {
         {
             for e in el {
                 deleted_size += e.size as usize;
+                println!(
+                    "delete: {}, cap={}, size={}, deleted={}, cur={}",
+                    &e.key, self.capacity, self.size, deleted_size, e.size
+                );
                 keys.push(e.key);
                 if e.filename.is_some() {
                     deleted_files.push(e.filename.unwrap());
                 }
 
-                if (!delete_all) && (self.capacity + deleted_size > self.size) {
+                if (!delete_all) && (self.capacity + deleted_size >= self.size) {
                     break 'outer;
                 }
             }
@@ -253,9 +260,11 @@ impl DBCache {
             .or_else(|e| Err(Error::Db(e)))?;
 
         for filename in deleted_files {
-            tokio::fs::remove_file(self.data_root.join(filename))
-                .await
-                .or_else(|e| Err(Error::Io(e)))?;
+            match tokio::fs::remove_file(self.data_root.join(&filename)).await {
+                Ok(_) => {}
+                // ここでエラーで終了させてしまうと、DBの値が更新がself.sizeに反映できない
+                Err(e) => error!("failed to remove file {} with {:?}", filename, e),
+            }
         }
         Ok((res.rows_affected.try_into().unwrap(), deleted_size))
     }
@@ -291,12 +300,10 @@ impl DBCache {
     async fn truncate(&mut self) -> Result<(usize, usize), Error> {
         // TODO: 毎回やるのは重いかもしれないので、適当にスキップすべきかもしれない
         let (expired_entries, expired_size) = self.truncate_expired().await?;
-
-        if self.size < self.capacity {
-            return Ok((0, 0));
-        }
+        self.size -= expired_size; // truncateのmethod内で修正できない
 
         let (old_deleted_entries, old_deleted_size) = self.truncate_old().await?;
+        self.size -= old_deleted_size;
         Ok((
             expired_entries + old_deleted_entries,
             expired_size + old_deleted_size,
@@ -313,6 +320,7 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
     };
 
+    #[allow(dead_code)] // tempdirは使わなけど残す必要がある
     struct TestFixture {
         pub tempdir: TempDir,
         pub cache: DBCache,
@@ -344,6 +352,8 @@ mod tests {
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
         f.cache.set_blob(key.into(), value, None).await.unwrap();
+
+        // dbに登録されているか
         let r = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
             .one(&f.cache.conn)
@@ -355,6 +365,7 @@ mod tests {
         assert!(r.filename == None);
         assert!(r.value.unwrap().len() == 4);
 
+        // dbcache経由での値の取得
         let mut r = f.cache.get(key).await.unwrap().unwrap();
         let mut buf: Vec<u8> = vec![0; 16];
         let num_read = r.read(&mut buf).await.unwrap();
@@ -393,6 +404,8 @@ mod tests {
             )
             .await
             .unwrap();
+
+        // databaseに値が登録されているか
         let r = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
             .one(&f.cache.conn)
@@ -404,6 +417,7 @@ mod tests {
         assert!(r.filename.is_some() && r.filename == Some(String::from("foo")));
         assert!(r.value.is_none());
 
+        // dbcache経由での値の取得
         let mut r = f.cache.get(key).await.unwrap().unwrap();
         let mut buf: Vec<u8> = vec![0; 16];
         let num_read = r.read(&mut buf).await.unwrap();
@@ -414,5 +428,32 @@ mod tests {
         assert!(!abs_path.exists());
 
         assert!(f.cache.get(key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_truncate_old() {
+        let mut f = TestFixture::new(12).await;
+        let value = vec![0, 1, 2, 3, 4, 5];
+        f.cache
+            .set_blob("A".into(), value.clone(), None)
+            .await
+            .unwrap();
+        f.cache
+            .set_blob("B".into(), value.clone(), None)
+            .await
+            .unwrap();
+        f.cache
+            .set_blob("C".into(), value.clone(), None)
+            .await
+            .unwrap();
+        f.cache
+            .set_blob("D".into(), value.clone(), None)
+            .await
+            .unwrap();
+
+        assert!(f.cache.get("A".into()).await.unwrap().is_none());
+        assert!(f.cache.get("B".into()).await.unwrap().is_none());
+        assert!(f.cache.get("C".into()).await.unwrap().is_some());
+        assert!(f.cache.get("D".into()).await.unwrap().is_some());
     }
 }
