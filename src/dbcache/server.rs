@@ -80,6 +80,16 @@ impl DBCache {
         })
     }
 
+    pub fn entries(&self) -> usize {
+        self.entries
+    }
+    pub fn size(&self) -> usize {
+        self.size
+    }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     pub async fn get(&self, key: &str) -> Result<Option<Pin<Box<dyn AsyncRead + Send>>>, Error> {
         let c: Option<cache::Model> = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
@@ -239,10 +249,6 @@ impl DBCache {
         {
             for e in el {
                 deleted_size += e.size as usize;
-                println!(
-                    "delete: {}, cap={}, size={}, deleted={}, cur={}",
-                    &e.key, self.capacity, self.size, deleted_size, e.size
-                );
                 keys.push(e.key);
                 if e.filename.is_some() {
                     deleted_files.push(e.filename.unwrap());
@@ -265,6 +271,7 @@ impl DBCache {
         if keys.len() == 0 {
             return Ok((0, 0));
         }
+        let del_entries = keys.len();
 
         let res = cache::Entity::delete_many()
             .filter(cache::Column::Key.is_in(keys))
@@ -272,6 +279,7 @@ impl DBCache {
             .await
             .or_else(|e| Err(Error::Db(e)))?;
 
+        self.entries -= del_entries;
         self.size -= deleted_size;
 
         for filename in deleted_files {
@@ -373,6 +381,9 @@ mod tests {
         let value = vec![0, 1, 2, 3];
         f.cache.set_blob(key.into(), value, None).await.unwrap();
 
+        assert!(f.cache.entries == 1);
+        assert!(f.cache.size == 4);
+
         // dbに登録されているか
         let r = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
@@ -393,6 +404,9 @@ mod tests {
         assert!(buf[..4] == [0, 1, 2, 3]);
 
         f.cache.del(key).await.unwrap();
+
+        assert!(f.cache.entries == 0);
+        assert!(f.cache.size == 0);
 
         assert!(f.cache.get(key).await.unwrap().is_none());
     }
@@ -425,6 +439,9 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(f.cache.entries == 1);
+        assert!(f.cache.size == 4);
+
         // databaseに値が登録されているか
         let r = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
@@ -446,6 +463,9 @@ mod tests {
 
         f.cache.del(key).await.unwrap();
         assert!(!abs_path.exists());
+
+        assert!(f.cache.entries == 0);
+        assert!(f.cache.size == 0);
 
         assert!(f.cache.get(key).await.unwrap().is_none());
     }
@@ -471,6 +491,8 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(f.cache.entries == 2);
+        assert!(f.cache.size == 12);
         assert!(f.cache.get("A".into()).await.unwrap().is_none());
         assert!(f.cache.get("B".into()).await.unwrap().is_none());
         assert!(f.cache.get("C".into()).await.unwrap().is_some());

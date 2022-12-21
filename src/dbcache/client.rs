@@ -11,7 +11,7 @@ use tokio::{
 use uuid::Uuid;
 
 use super::errors::Error;
-use super::task::{DelTask, GetTask, SetBlobTask, SetFileTask, Task};
+use super::task::*;
 
 #[derive(Debug)]
 pub struct DBCacheClient {
@@ -193,6 +193,18 @@ impl DBCacheClient {
                 tx: tx,
                 key: key.into(),
             }))
+            .await
+            .or_else(|_e| Err(Error::SendError))?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
+
+    pub async fn stat(&self) -> Result<Stat, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::Stat(StatTask { tx: tx }))
             .await
             .or_else(|_e| Err(Error::SendError))?;
         match rx.await {

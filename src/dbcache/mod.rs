@@ -63,6 +63,14 @@ pub async fn run_server(
                     .or_else(|_t| Err(()))
                 }
                 Task::Del(t) => t.tx.send(dbcache.del(&t.key).await).or_else(|_t| Err(())),
+                Task::Stat(t) => {
+                    t.tx.send(Ok(Stat {
+                        entries: dbcache.entries(),
+                        size: dbcache.size(),
+                        capacity: dbcache.capacity(),
+                    }))
+                    .or_else(|_t| Err(()))
+                }
                 Task::End(t) => {
                     t.tx.send(()).unwrap();
                     break;

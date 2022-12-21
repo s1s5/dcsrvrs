@@ -61,17 +61,6 @@ async fn get_data(
         },
         Err(_) => Err(Status::InternalServerError),
     }
-    // let f = {
-    //     let mut lru_cache = lru_cache_state.lock().unwrap();
-    //     lru_cache.get_filename(key)
-    // };
-    // match f {
-    //     Ok(f) => match NamedFile::open(f).await.ok() {
-    //         Some(f) => Ok(f),
-    //         None => Err(NotFound(())),
-    //     },
-    //     Err(_) => Err(NotFound(())),
-    // }
 }
 
 #[put("/<path..>", data = "<data>")]
@@ -97,37 +86,6 @@ async fn put_data(
             _ => Status::InternalServerError,
         },
     }
-
-    // let abs_path = {
-    //     let lru_cache = lru_cache_state.lock().unwrap();
-    //     let pb = lru_cache.rel_to_abs_path(key);
-    //     pb
-    // };
-
-    // match fs::create_dir_all(abs_path.parent().expect("Bad path?")) {
-    //     Ok(_) => {}
-    //     Err(_error) => return Status::InternalServerError,
-    // };
-    // match data
-    //     .open(config.file_size_limit.bytes())
-    //     .into_file(&abs_path)
-    //     .await
-    // {
-    //     Ok(_file) => {}
-    //     Err(_error) => {
-    //         return Status::InternalServerError;
-    //     }
-    // };
-    // {
-    //     let mut lru_cache = lru_cache_state.lock().unwrap();
-    //     let size = std::fs::metadata(&abs_path).unwrap().len();
-    //     match lru_cache.add_file(AddFile::AbsPath(abs_path.into()), size) {
-    //         Ok(_) => {}
-    //         Err(_error) => return Status::InternalServerError,
-    //     }
-    // }
-
-    // Status::Ok
 }
 
 #[delete("/<path..>")]
@@ -143,39 +101,26 @@ async fn delete_data(path: PathBuf, client: &State<DBCacheClient>) -> Status {
         }
         Err(_) => Status::InternalServerError,
     }
-    // match {
-    //     let mut lru_cache = lru_cache_state.lock().unwrap();
-    //     lru_cache.remove(key)
-    // } {
-    //     Ok(r) => match r {
-    //         Some(_) => Status::Ok,
-    //         None => Status::NotFound,
-    //     },
-    //     Err(_error) => Status::InternalServerError,
-    // }
 }
 
 #[derive(Serialize)]
 #[serde(crate = "rocket::serde")]
 struct ServerStatus {
-    size: u64,
-    len: usize,
-    capacity: u64,
+    entries: usize,
+    size: usize,
+    capacity: usize,
 }
 
 #[get("/-/healthcheck")]
-fn healthcheck() -> Json<ServerStatus> {
-    // let lru_cache = lru_cache_state.lock().unwrap();
-    // Json(ServerStatus {
-    //     size: lru_cache.size(),
-    //     len: lru_cache.len(),
-    //     capacity: lru_cache.capacity(),
-    // })
-    Json(ServerStatus {
-        size: 0,
-        len: 0,
-        capacity: 0,
-    })
+async fn healthcheck(client: &State<DBCacheClient>) -> Result<Json<ServerStatus>, Status> {
+    match client.stat().await {
+        Ok(s) => Ok(Json(ServerStatus {
+            entries: s.entries,
+            size: s.size,
+            capacity: s.capacity,
+        })),
+        Err(_) => Err(Status::InternalServerError),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -192,25 +137,11 @@ impl error::Error for InitializationFailedError {
     }
 }
 
-// struct A {}
-
-// impl Drop for A {
-//     fn drop(&mut self) {
-//         println!("drop A");
-//     }
-// }
-// #[launch]
-// async fn rocket() -> _ {}
-
 #[rocket::main]
 async fn main() {
     env_logger::init();
-    // let connection = sea_orm::Database::connect(&database_url).await?;
-    // Migrator::up(&connection, None).await?;
     let config = envy::from_env::<Config>().unwrap();
     debug!("config: {:?}", config);
-    // let lru_cache =
-    //     Mutex::new(LruDiskCache::new(config.cache_dir.clone(), config.size_limit).unwrap());
 
     let (client, disposer) = run_server(
         &PathBuf::from(&config.cache_dir),
@@ -223,19 +154,15 @@ async fn main() {
 
     let result = rocket::build()
         .mount("/", routes![get_data, put_data, delete_data, healthcheck])
-        // .manage(lru_cache)
         .manage(config)
-        // .manage(a)
         .manage(client)
         .launch()
         .await;
 
     disposer.dispose().await.unwrap();
 
-    // If the server shut down (by visiting `/shutdown`), `result` is `Ok`.
     match result {
         Ok(_) => {}
         Err(e) => error!("server failed unexpectedly: {:?}", e),
     }
-    // result.expect("server failed unexpectedly");
 }

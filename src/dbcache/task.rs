@@ -24,6 +24,16 @@ pub struct DelTask {
     pub tx: oneshot::Sender<Result<u64, Error>>,
     pub key: String,
 }
+
+pub struct Stat {
+    pub entries: usize,
+    pub size: usize,
+    pub capacity: usize,
+}
+
+pub struct StatTask {
+    pub tx: oneshot::Sender<Result<Stat, Error>>,
+}
 pub struct EndTask {
     pub tx: oneshot::Sender<()>,
 }
@@ -33,5 +43,6 @@ pub enum Task {
     SetBlob(SetBlobTask),
     SetFile(SetFileTask),
     Del(DelTask),
+    Stat(StatTask),
     End(EndTask),
 }
