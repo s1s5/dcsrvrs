@@ -1,10 +1,7 @@
-use std::time::SystemTime;
-
 use chrono::{DateTime, Utc};
-use dcsrvrs::establish_connection;
 use entity::cache;
 use migration::DbErr;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, Database, EntityTrait, QueryFilter, Set};
 
 #[tokio::main]
 async fn main() -> Result<(), DbErr> {
@@ -13,7 +10,8 @@ async fn main() -> Result<(), DbErr> {
         .with_test_writer()
         .init();
 
-    let db = establish_connection().await?;
+    let db = Database::connect("sqlite:///tmp/dcsrvrs-test0.db").await?;
+
     let now: DateTime<Utc> = Utc::now();
 
     // Find a cake model first
@@ -26,9 +24,9 @@ async fn main() -> Result<(), DbErr> {
 
     let c = cache::ActiveModel {
         key: Set(String::from("test")),
-        store_time: Set(now.to_rfc3339().into()),
+        store_time: Set(now.timestamp()),
         expire_time: Set(None),
-        access_time: Set(now.to_rfc3339().into()),
+        access_time: Set(now.timestamp()),
         size: Set(10),
         filename: Set(None),
         value: Set(None),

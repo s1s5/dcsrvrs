@@ -1,7 +1,6 @@
 #[macro_use]
 extern crate rocket;
 use dcsrvrs::dbcache::{run_server, DBCacheClient};
-use dcsrvrs::lru_disk_cache::{AddFile, LruDiskCache};
 use envy;
 use path_clean::PathClean;
 use rocket::response::stream::ReaderStream;
@@ -31,7 +30,7 @@ struct Config {
 }
 
 fn default_cache_dir() -> String {
-    "/tmp/dcsrvrs".into()
+    "/tmp/dcsrvrs-data".into()
 }
 
 fn default_capacity() -> u64 {
@@ -195,13 +194,13 @@ impl error::Error for InitializationFailedError {
     }
 }
 
-struct A {}
+// struct A {}
 
-impl Drop for A {
-    fn drop(&mut self) {
-        println!("drop A");
-    }
-}
+// impl Drop for A {
+//     fn drop(&mut self) {
+//         println!("drop A");
+//     }
+// }
 // #[launch]
 // async fn rocket() -> _ {}
 
@@ -215,9 +214,8 @@ async fn main() {
     // let lru_cache =
     //     Mutex::new(LruDiskCache::new(config.cache_dir.clone(), config.size_limit).unwrap());
 
-    let a = A {};
     let (client, disposer) = run_server(
-        &PathBuf::from("/tmp/dcsrvrs-data"),
+        &PathBuf::from(&config.cache_dir),
         config.blob_threshold.try_into().unwrap(),
         config.file_size_limit.try_into().unwrap(),
         config.capacity.try_into().unwrap(),
