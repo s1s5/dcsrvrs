@@ -2,6 +2,7 @@ use chrono::{DateTime, Local, Utc};
 use entity::cache;
 use log::debug;
 use migration::{Migrator, MigratorTrait, Order};
+use rocket::futures::TryFutureExt;
 use sea_orm::entity::ModelTrait;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, Paginator,
@@ -64,9 +65,7 @@ impl DBCache {
             .column(cache::Column::Size)
             .into_model::<LimitedCacheRow>()
             .paginate(&conn, 1000);
-        debug!("calculating cache size");
         while let Some(el) = pages.fetch_and_next().await? {
-            debug!("loading cache keys");
             for e in el {
                 entries += 1;
                 size += e.size;
@@ -200,15 +199,22 @@ impl DBCache {
             .await
             .or_else(|e| Err(Error::Db(e)))?;
         Ok(match c {
-            Some(e) => {
-                println!("{}, {}", self.size, e.size);
+            Some(x) => {
                 self.entries -= 1;
-                self.size -= e.size as usize;
+                self.size -= x.size as usize;
 
-                e.delete(&self.conn)
+                let filename = x.filename.clone();
+                let s = x
+                    .delete(&self.conn)
                     .await
                     .or_else(|e| Err(Error::Db(e)))?
-                    .rows_affected
+                    .rows_affected;
+                if let Some(filename) = filename {
+                    tokio::fs::remove_file(self.data_root.join(filename))
+                        .await
+                        .or_else(|e| Err(Error::Io(e)))?;
+                }
+                s
             }
             None => 0,
         })
@@ -245,6 +251,12 @@ impl DBCache {
             .exec(&self.conn)
             .await
             .or_else(|e| Err(Error::Db(e)))?;
+
+        for filename in deleted_files {
+            tokio::fs::remove_file(self.data_root.join(filename))
+                .await
+                .or_else(|e| Err(Error::Io(e)))?;
+        }
         Ok((res.rows_affected.try_into().unwrap(), deleted_size))
     }
 
@@ -289,5 +301,118 @@ impl DBCache {
             expired_entries + old_deleted_entries,
             expired_size + old_deleted_size,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use tokio::{
+        fs::{self, File},
+        io::{AsyncReadExt, AsyncWriteExt},
+    };
+
+    struct TestFixture {
+        pub tempdir: TempDir,
+        pub cache: DBCache,
+    }
+
+    impl TestFixture {
+        pub async fn new(capacity: usize) -> TestFixture {
+            let tempdir = tempfile::Builder::new()
+                .prefix("dbcache-test")
+                .tempdir()
+                .unwrap();
+            TestFixture {
+                cache: DBCache::new(
+                    &tempdir.path().join("db.sqlite"),
+                    &tempdir.path().join("data"),
+                    capacity,
+                )
+                .await
+                .unwrap(),
+                tempdir: tempdir,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_get() {
+        let mut f = TestFixture::new(1024).await;
+
+        let key = "some-key";
+        let value = vec![0, 1, 2, 3];
+        f.cache.set_blob(key.into(), value, None).await.unwrap();
+        let r = cache::Entity::find()
+            .filter(cache::Column::Key.eq(key))
+            .one(&f.cache.conn)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(r.size == 4);
+        assert!(r.filename == None);
+        assert!(r.value.unwrap().len() == 4);
+
+        let mut r = f.cache.get(key).await.unwrap().unwrap();
+        let mut buf: Vec<u8> = vec![0; 16];
+        let num_read = r.read(&mut buf).await.unwrap();
+        assert!(num_read == 4);
+        assert!(buf[..4] == [0, 1, 2, 3]);
+
+        f.cache.del(key).await.unwrap();
+
+        assert!(f.cache.get(key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_get_file() {
+        let mut f = TestFixture::new(1024).await;
+
+        let key = "some-key";
+        let abs_path = f.cache.data_root.join("foo");
+        {
+            fs::create_dir_all(&abs_path.parent().unwrap())
+                .await
+                .unwrap();
+            let mut writer = File::create(&abs_path).await.unwrap();
+            writer.write_all(&vec![0, 1, 2, 3]).await.unwrap();
+        }
+        f.cache
+            .set_file(
+                key.into(),
+                4,
+                abs_path
+                    .strip_prefix(&f.cache.data_root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .into(),
+                None,
+            )
+            .await
+            .unwrap();
+        let r = cache::Entity::find()
+            .filter(cache::Column::Key.eq(key))
+            .one(&f.cache.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        println!("{:?}", r);
+        assert!(r.size == 4);
+        assert!(r.filename.is_some() && r.filename == Some(String::from("foo")));
+        assert!(r.value.is_none());
+
+        let mut r = f.cache.get(key).await.unwrap().unwrap();
+        let mut buf: Vec<u8> = vec![0; 16];
+        let num_read = r.read(&mut buf).await.unwrap();
+        assert!(num_read == 4);
+        assert!(buf[..4] == [0, 1, 2, 3]);
+
+        f.cache.del(key).await.unwrap();
+        assert!(!abs_path.exists());
+
+        assert!(f.cache.get(key).await.unwrap().is_none());
     }
 }

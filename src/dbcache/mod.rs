@@ -91,10 +91,7 @@ mod tests {
 
     use super::ioutil::ByteReader;
     use super::*;
-    use std::{
-        path::{Path, PathBuf},
-        pin::Pin,
-    };
+    use std::{path::Path, pin::Pin};
     use tempfile::TempDir;
     use tokio::io::AsyncReadExt;
 
@@ -147,6 +144,7 @@ mod tests {
         dbc.del(key).await.unwrap();
 
         assert!(dbc.get(key).await.unwrap().is_none());
+        disposer.dispose().await.unwrap();
     }
 
     #[tokio::test]
@@ -179,5 +177,6 @@ mod tests {
         dbc.del(key).await.unwrap();
 
         assert!(dbc.get(key).await.unwrap().is_none());
+        disposer.dispose().await.unwrap();
     }
 }
