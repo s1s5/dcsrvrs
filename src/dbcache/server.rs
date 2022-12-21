@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local, Utc};
 use entity::cache;
 use log::error;
-use migration::{Migrator, MigratorTrait, Order};
+use migration::{Condition, Migrator, MigratorTrait, Order};
 use sea_orm::entity::ModelTrait;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, Paginator,
@@ -26,6 +26,12 @@ struct LimitedCacheRowWithFilename {
     key: String,
     size: i64,
     filename: Option<String>,
+}
+
+#[derive(FromQueryResult)]
+struct CacheKeyAndStoreTime {
+    key: String,
+    store_time: i64,
 }
 
 pub struct DBCache {
@@ -336,6 +342,80 @@ impl DBCache {
             expired_entries + old_deleted_entries,
             expired_size + old_deleted_size,
         ))
+    }
+
+    pub async fn flushall(&mut self) -> Result<(usize, usize), Error> {
+        let mut deleted_entries = 0;
+        let mut deleted_size = 0;
+        loop {
+            if self.size == 0 {
+                break;
+            }
+
+            let (keys, files, size) = self
+                .truncate_rows_extract_keys(
+                    cache::Entity::find()
+                        .order_by(cache::Column::AccessTime, Order::Asc)
+                        .limit(10000)
+                        .select_only()
+                        .column(cache::Column::Key)
+                        .column(cache::Column::Size)
+                        .column(cache::Column::Filename)
+                        .into_model::<LimitedCacheRowWithFilename>()
+                        .paginate(&self.conn, 1000),
+                    true,
+                )
+                .await?;
+            let (e, s) = self.truncate_rows_truncate(keys, files, size).await?;
+            deleted_entries += e;
+            deleted_size += s;
+        }
+        Ok((deleted_entries, deleted_size))
+    }
+
+    pub async fn keys(
+        &self,
+        max_num: i64,
+        key: Option<String>,
+        store_time: Option<i64>,
+        prefix: Option<String>,
+    ) -> Result<Vec<(String, i64)>, Error> {
+        let qs = cache::Entity::find();
+
+        let qs = if key.is_some() && store_time.is_some() {
+            qs.filter(
+                Condition::any()
+                    .add(cache::Column::StoreTime.gt(store_time))
+                    .add(
+                        Condition::all()
+                            .add(cache::Column::StoreTime.eq(store_time))
+                            .add(cache::Column::Key.gt(key)),
+                    ),
+            )
+        } else if store_time.is_some() {
+            qs.filter(cache::Column::StoreTime.gt(store_time))
+        } else {
+            qs
+        };
+
+        let qs = if prefix.is_some() {
+            qs.filter(cache::Column::Key.starts_with(&prefix.unwrap()))
+        } else {
+            qs
+        };
+
+        let data = qs
+            .order_by(cache::Column::StoreTime, Order::Asc)
+            .limit(max_num.try_into().unwrap())
+            .select_only()
+            .column(cache::Column::Key)
+            .column(cache::Column::StoreTime)
+            .into_model::<CacheKeyAndStoreTime>()
+            .all(&self.conn)
+            .await
+            .or_else(|e| Err(Error::Db(e)))?;
+
+        Ok(data.into_iter().map(|e| (e.key, e.store_time)).collect())
     }
 }
 

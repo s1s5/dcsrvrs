@@ -5,6 +5,7 @@ use envy;
 use path_clean::PathClean;
 use rocket::response::stream::ReaderStream;
 use rocket::serde::{json::Json, Serialize};
+use rocket::Shutdown;
 use rocket::{data::ToByteUnit, http::Status, Data, State};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -121,6 +122,36 @@ async fn healthcheck(client: &State<DBCacheClient>) -> Result<Json<ServerStatus>
         })),
         Err(_) => Err(Status::InternalServerError),
     }
+}
+
+#[post("/-/shutdown")]
+async fn shutdown(shutdown: Shutdown) -> Status {
+    shutdown.await;
+    Status::Ok
+}
+
+#[post("/-/flushall")]
+async fn flushall(client: &State<DBCacheClient>) {}
+
+#[derive(Deserialize)]
+struct GetKeyArg {
+    max_num: i64,
+    key: Option<String>,
+    store_time: Option<i64>,
+    prefix: Option<String>,
+}
+
+#[derive(Serialize)]
+struct GetKeyResponse {
+    key: String,
+    store_time: i64,
+}
+
+#[post("/-/keys", data = "<arg>")]
+async fn keys(
+    arg: Json<GetKeyArg>,
+    client: &State<DBCacheClient>,
+) -> Result<Json<Vec<GetKeyResponse>>, Status> {
 }
 
 #[derive(Debug, Clone)]
