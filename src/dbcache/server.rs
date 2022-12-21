@@ -1,34 +1,28 @@
 use chrono::{DateTime, Local, Utc};
 use entity::cache;
-use log::{debug, error, info, log_enabled, Level};
-use migration::{Migrator, MigratorTrait};
+use log::debug;
+use migration::{Migrator, MigratorTrait, Order};
 use sea_orm::entity::ModelTrait;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, FromQueryResult, PaginatorTrait, QueryFilter,
-    QuerySelect, Set, SqlxSqliteConnector,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, Paginator,
+    PaginatorTrait, QueryFilter, QuerySelect, SelectModel, Set, SqlxSqliteConnector,
 };
-use sea_orm::{DbConn, DbErr};
+use sea_orm::{DbConn, QueryOrder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use std::error;
-use std::fmt;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use tokio::io::AsyncRead;
 
 use super::errors::{DbFieldError, Error};
 use super::ioutil::ByteReader;
-use super::task::{DelTask, GetTask, SetBlobTask, SetFileTask, Task};
-use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::{cmp, fs};
-use tokio::fs::{remove_file, File};
-use tokio::io::{copy, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot};
-use tokio::{
-    io::{self, AsyncRead, AsyncReadExt},
-    sync::Mutex,
-};
-use uuid::Uuid;
 
 #[derive(FromQueryResult)]
 struct LimitedCacheRow {
+    size: i64,
+}
+
+#[derive(FromQueryResult)]
+struct LimitedCacheRowWithFilename {
     key: String,
     size: i64,
     filename: Option<String>,
@@ -59,9 +53,6 @@ impl DBCache {
             .connect_with(connection_options)
             .await?;
 
-        // let conn = Database::connect(db_url)
-        //     .await
-        //     .expect("Failed to setup the database");
         let conn = SqlxSqliteConnector::from_sqlx_sqlite_pool(sqlite_pool);
         Migrator::up(&conn, None)
             .await
@@ -70,9 +61,7 @@ impl DBCache {
         let (mut entries, mut size) = (0, 0);
         let mut pages = cache::Entity::find()
             .select_only()
-            .column(cache::Column::Key)
             .column(cache::Column::Size)
-            .column(cache::Column::Filename)
             .into_model::<LimitedCacheRow>()
             .paginate(&conn, 1000);
         debug!("calculating cache size");
@@ -140,9 +129,7 @@ impl DBCache {
     ) -> Result<(), Error> {
         let old_size = match cache::Entity::find()
             .select_only()
-            .column(cache::Column::Key)
             .column(cache::Column::Size)
-            .column(cache::Column::Filename)
             .filter(cache::Column::Key.eq(key.clone()))
             .into_model::<LimitedCacheRow>()
             .one(&self.conn)
@@ -227,21 +214,14 @@ impl DBCache {
         })
     }
 
-    async fn truncate(&mut self) -> Result<(usize, usize), Error> {
-        if self.size < self.capacity {
-            return Ok((0, 0));
-        }
-
+    async fn truncate_rows(
+        &self,
+        mut pages: Paginator<'_, DatabaseConnection, SelectModel<LimitedCacheRowWithFilename>>,
+        delete_all: bool,
+    ) -> Result<(usize, usize), Error> {
         let mut keys: Vec<String> = Vec::new();
         let mut deleted_files: Vec<String> = Vec::new();
         let mut deleted_size: usize = 0;
-        let mut pages = cache::Entity::find()
-            .select_only()
-            .column(cache::Column::Key)
-            .column(cache::Column::Size)
-            .column(cache::Column::Filename)
-            .into_model::<LimitedCacheRow>()
-            .paginate(&self.conn, 100);
 
         'outer: while let Some(el) = pages
             .fetch_and_next()
@@ -255,7 +235,7 @@ impl DBCache {
                     deleted_files.push(e.filename.unwrap());
                 }
 
-                if self.capacity + deleted_size > self.size {
+                if (!delete_all) && (self.capacity + deleted_size > self.size) {
                     break 'outer;
                 }
             }
@@ -268,28 +248,46 @@ impl DBCache {
         Ok((res.rows_affected.try_into().unwrap(), deleted_size))
     }
 
-    // pub async fn run(&mut self, rx: &mut mpsc::Receiver<Task>) {
-    //     // while let Some(task) = rx.recv().await {
-    //     //     match task {
-    //     //         Task::Get(t) => {
-    //     //             t.tx.send(self.get(&t.key).await);
-    //     //         }
-    //     //         Task::SetBlob(t) => {
-    //     //             t.tx.send(self.set_blob(t.key, t.blob, t.expire_time).await);
-    //     //         }
-    //     //         Task::SetFile(t) => {
-    //     //             t.tx.send(
-    //     //                 self.set_file(t.key, t.size.try_into().unwrap(), t.filename, t.expire_time)
-    //     //                     .await,
-    //     //             );
-    //     //         }
-    //     //         Task::Del(t) => {
-    //     //             t.tx.send(self.del(&t.key).await);
-    //     //         }
-    //     //         Task::End => {
-    //     //             break;
-    //     //         }
-    //     //     }
-    //     // }
-    // }
+    async fn truncate_expired(&mut self) -> Result<(usize, usize), Error> {
+        let now = Local::now().timestamp();
+        let pages = cache::Entity::find()
+            .filter(cache::Column::ExpireTime.is_not_null())
+            .filter(cache::Column::ExpireTime.lt(now))
+            .select_only()
+            .column(cache::Column::Key)
+            .column(cache::Column::Size)
+            .column(cache::Column::Filename)
+            .into_model::<LimitedCacheRowWithFilename>()
+            .paginate(&self.conn, 100);
+
+        self.truncate_rows(pages, true).await
+    }
+
+    async fn truncate_old(&mut self) -> Result<(usize, usize), Error> {
+        let pages = cache::Entity::find()
+            .order_by(cache::Column::AccessTime, Order::Asc)
+            .select_only()
+            .column(cache::Column::Key)
+            .column(cache::Column::Size)
+            .column(cache::Column::Filename)
+            .into_model::<LimitedCacheRowWithFilename>()
+            .paginate(&self.conn, 100);
+
+        self.truncate_rows(pages, false).await
+    }
+
+    async fn truncate(&mut self) -> Result<(usize, usize), Error> {
+        // TODO: 毎回やるのは重いかもしれないので、適当にスキップすべきかもしれない
+        let (expired_entries, expired_size) = self.truncate_expired().await?;
+
+        if self.size < self.capacity {
+            return Ok((0, 0));
+        }
+
+        let (old_deleted_entries, old_deleted_size) = self.truncate_old().await?;
+        Ok((
+            expired_entries + old_deleted_entries,
+            expired_size + old_deleted_size,
+        ))
+    }
 }

@@ -4,36 +4,15 @@ mod ioutil;
 mod server;
 mod task;
 
+use log::{debug, error};
+use std::fs;
+use std::path::Path;
+use tokio::sync::{mpsc, oneshot};
+
 pub use self::client::DBCacheClient;
 pub use self::errors::*;
 use self::server::DBCache;
 use self::task::*;
-
-use chrono::{DateTime, Local, Utc};
-use entity::cache;
-use log::{debug, error, info, log_enabled, Level};
-use migration::{Migrator, MigratorTrait};
-use sea_orm::entity::ModelTrait;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, FromQueryResult, PaginatorTrait, QueryFilter,
-    QuerySelect, Set, SqlxSqliteConnector,
-};
-use sea_orm::{DbConn, DbErr};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use std::error;
-use std::fmt;
-
-use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::{cmp, fs};
-use tokio::fs::{remove_file, File};
-use tokio::io::{copy, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot};
-use tokio::{
-    io::{self, AsyncRead, AsyncReadExt},
-    sync::Mutex,
-};
-use uuid::Uuid;
 
 pub struct DBCacheDisposer {
     tx: mpsc::Sender<Task>,
@@ -112,8 +91,12 @@ mod tests {
 
     use super::ioutil::ByteReader;
     use super::*;
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        pin::Pin,
+    };
     use tempfile::TempDir;
+    use tokio::io::AsyncReadExt;
 
     struct TestFixture {
         /// Temp directory.

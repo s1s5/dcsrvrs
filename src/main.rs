@@ -5,13 +5,11 @@ use envy;
 use path_clean::PathClean;
 use rocket::response::stream::ReaderStream;
 use rocket::serde::{json::Json, Serialize};
-use rocket::{
-    data::ToByteUnit, fs::NamedFile, http::Status, response::status::NotFound, Data, State,
-};
+use rocket::{data::ToByteUnit, http::Status, Data, State};
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::{error, fmt};
-use std::{fs, path::PathBuf, sync::Mutex};
 use tokio::io::AsyncRead;
 
 #[derive(Deserialize, Debug)]
@@ -235,5 +233,9 @@ async fn main() {
     disposer.dispose().await.unwrap();
 
     // If the server shut down (by visiting `/shutdown`), `result` is `Ok`.
-    result.expect("server failed unexpectedly");
+    match result {
+        Ok(_) => {}
+        Err(e) => error!("server failed unexpectedly: {:?}", e),
+    }
+    // result.expect("server failed unexpectedly");
 }
