@@ -262,6 +262,10 @@ impl DBCache {
         deleted_files: Vec<String>,
         deleted_size: usize,
     ) -> Result<(usize, usize), Error> {
+        if keys.len() == 0 {
+            return Ok((0, 0));
+        }
+
         let res = cache::Entity::delete_many()
             .filter(cache::Column::Key.is_in(keys))
             .exec(&self.conn)
