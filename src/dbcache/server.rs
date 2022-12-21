@@ -219,17 +219,17 @@ impl DBCache {
         })
     }
 
-    async fn truncate_rows(
+    async fn truncate_rows_extract_keys(
         &self,
         mut pages: Paginator<'_, DatabaseConnection, SelectModel<LimitedCacheRowWithFilename>>,
         delete_all: bool,
-    ) -> Result<(usize, usize), Error> {
+    ) -> Result<(Vec<String>, Vec<String>, usize), Error> {
         let mut keys: Vec<String> = Vec::new();
         let mut deleted_files: Vec<String> = Vec::new();
         let mut deleted_size: usize = 0;
 
         if (!delete_all) && (self.capacity >= self.size) {
-            return Ok((0, 0));
+            return Ok((vec![], vec![], 0));
         }
 
         'outer: while let Some(el) = pages
@@ -253,11 +253,22 @@ impl DBCache {
                 }
             }
         }
+        Ok((keys, deleted_files, deleted_size))
+    }
+
+    async fn truncate_rows_truncate(
+        &mut self,
+        keys: Vec<String>,
+        deleted_files: Vec<String>,
+        deleted_size: usize,
+    ) -> Result<(usize, usize), Error> {
         let res = cache::Entity::delete_many()
             .filter(cache::Column::Key.is_in(keys))
             .exec(&self.conn)
             .await
             .or_else(|e| Err(Error::Db(e)))?;
+
+        self.size -= deleted_size;
 
         for filename in deleted_files {
             match tokio::fs::remove_file(self.data_root.join(&filename)).await {
@@ -271,39 +282,44 @@ impl DBCache {
 
     async fn truncate_expired(&mut self) -> Result<(usize, usize), Error> {
         let now = Local::now().timestamp();
-        let pages = cache::Entity::find()
-            .filter(cache::Column::ExpireTime.is_not_null())
-            .filter(cache::Column::ExpireTime.lt(now))
-            .select_only()
-            .column(cache::Column::Key)
-            .column(cache::Column::Size)
-            .column(cache::Column::Filename)
-            .into_model::<LimitedCacheRowWithFilename>()
-            .paginate(&self.conn, 100);
-
-        self.truncate_rows(pages, true).await
+        let (keys, files, size) = self
+            .truncate_rows_extract_keys(
+                cache::Entity::find()
+                    .filter(cache::Column::ExpireTime.is_not_null())
+                    .filter(cache::Column::ExpireTime.lt(now))
+                    .select_only()
+                    .column(cache::Column::Key)
+                    .column(cache::Column::Size)
+                    .column(cache::Column::Filename)
+                    .into_model::<LimitedCacheRowWithFilename>()
+                    .paginate(&self.conn, 100),
+                true,
+            )
+            .await?;
+        self.truncate_rows_truncate(keys, files, size).await
     }
 
     async fn truncate_old(&mut self) -> Result<(usize, usize), Error> {
-        let pages = cache::Entity::find()
-            .order_by(cache::Column::AccessTime, Order::Asc)
-            .select_only()
-            .column(cache::Column::Key)
-            .column(cache::Column::Size)
-            .column(cache::Column::Filename)
-            .into_model::<LimitedCacheRowWithFilename>()
-            .paginate(&self.conn, 100);
-
-        self.truncate_rows(pages, false).await
+        let (keys, files, size) = self
+            .truncate_rows_extract_keys(
+                cache::Entity::find()
+                    .order_by(cache::Column::AccessTime, Order::Asc)
+                    .select_only()
+                    .column(cache::Column::Key)
+                    .column(cache::Column::Size)
+                    .column(cache::Column::Filename)
+                    .into_model::<LimitedCacheRowWithFilename>()
+                    .paginate(&self.conn, 100),
+                false,
+            )
+            .await?;
+        self.truncate_rows_truncate(keys, files, size).await
     }
 
     async fn truncate(&mut self) -> Result<(usize, usize), Error> {
         // TODO: 毎回やるのは重いかもしれないので、適当にスキップすべきかもしれない
         let (expired_entries, expired_size) = self.truncate_expired().await?;
-        self.size -= expired_size; // truncateのmethod内で修正できない
-
         let (old_deleted_entries, old_deleted_size) = self.truncate_old().await?;
-        self.size -= old_deleted_size;
         Ok((
             expired_entries + old_deleted_entries,
             expired_size + old_deleted_size,
