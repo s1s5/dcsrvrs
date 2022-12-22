@@ -321,7 +321,7 @@ impl DBCache {
         let (keys, files, size) = self
             .truncate_rows_extract_keys(
                 cache::Entity::find()
-                    .order_by(cache::Column::AccessTime, Order::Asc)
+                    .order_by_asc(cache::Column::AccessTime)
                     .select_only()
                     .column(cache::Column::Key)
                     .column(cache::Column::Size)
@@ -405,7 +405,8 @@ impl DBCache {
         };
 
         let data = qs
-            .order_by(cache::Column::StoreTime, Order::Asc)
+            .order_by_asc(cache::Column::StoreTime)
+            .order_by_asc(cache::Column::Key)
             .limit(max_num.try_into().unwrap())
             .select_only()
             .column(cache::Column::Key)
@@ -577,5 +578,15 @@ mod tests {
         assert!(f.cache.get("B".into()).await.unwrap().is_none());
         assert!(f.cache.get("C".into()).await.unwrap().is_some());
         assert!(f.cache.get("D".into()).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_flushall() {
+        // TODO
+    }
+
+    #[tokio::test]
+    async fn test_keys() {
+        // TODO
     }
 }
