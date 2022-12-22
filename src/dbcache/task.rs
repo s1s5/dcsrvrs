@@ -34,6 +34,18 @@ pub struct Stat {
 pub struct StatTask {
     pub tx: oneshot::Sender<Result<Stat, Error>>,
 }
+
+pub struct FlushAllTask {
+    pub tx: oneshot::Sender<Result<(usize, usize), Error>>,
+}
+
+pub struct KeysTask {
+    pub tx: oneshot::Sender<Result<Vec<(String, i64)>, Error>>,
+    pub max_num: i64,
+    pub key: Option<String>,
+    pub store_time: Option<i64>,
+    pub prefix: Option<String>,
+}
 pub struct EndTask {
     pub tx: oneshot::Sender<()>,
 }
@@ -44,5 +56,7 @@ pub enum Task {
     SetFile(SetFileTask),
     Del(DelTask),
     Stat(StatTask),
+    FlushAll(FlushAllTask),
+    Keys(KeysTask),
     End(EndTask),
 }

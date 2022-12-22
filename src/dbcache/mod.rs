@@ -71,6 +71,11 @@ pub async fn run_server(
                     }))
                     .or_else(|_t| Err(()))
                 }
+                Task::FlushAll(t) => t.tx.send(dbcache.flushall().await).or_else(|_t| Err(())),
+                Task::Keys(t) => {
+                    t.tx.send(dbcache.keys(t.max_num, t.key, t.store_time, t.prefix).await)
+                        .or_else(|_t| Err(()))
+                }
                 Task::End(t) => {
                     t.tx.send(()).unwrap();
                     break;

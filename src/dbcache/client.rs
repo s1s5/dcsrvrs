@@ -212,6 +212,42 @@ impl DBCacheClient {
             Err(e) => Err(Error::RecvError(e)),
         }
     }
+
+    pub async fn flushall(&self) -> Result<(usize, usize), Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::FlushAll(FlushAllTask { tx: tx }))
+            .await
+            .or_else(|_e| Err(Error::SendError))?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
+
+    pub async fn keys(
+        &self,
+        max_num: i64,
+        key: Option<String>,
+        store_time: Option<i64>,
+        prefix: Option<String>,
+    ) -> Result<Vec<(String, i64)>, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::Keys(KeysTask {
+                tx: tx,
+                max_num: max_num,
+                key: key,
+                store_time: store_time,
+                prefix: prefix,
+            }))
+            .await
+            .or_else(|_e| Err(Error::SendError))?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
 }
 
 // impl std::clone::Clone for DBCacheClient {

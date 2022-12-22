@@ -131,7 +131,12 @@ async fn shutdown(shutdown: Shutdown) -> Status {
 }
 
 #[post("/-/flushall")]
-async fn flushall(client: &State<DBCacheClient>) {}
+async fn flushall(client: &State<DBCacheClient>) -> Status {
+    match client.flushall().await {
+        Ok(_) => Status::Ok,
+        Err(_) => Status::InternalServerError,
+    }
+}
 
 #[derive(Deserialize)]
 struct GetKeyArg {
@@ -152,6 +157,25 @@ async fn keys(
     arg: Json<GetKeyArg>,
     client: &State<DBCacheClient>,
 ) -> Result<Json<Vec<GetKeyResponse>>, Status> {
+    match client
+        .keys(
+            arg.max_num,
+            arg.key.clone(),
+            arg.store_time,
+            arg.prefix.clone(),
+        )
+        .await
+    {
+        Ok(d) => Ok(Json(
+            d.into_iter()
+                .map(|e| GetKeyResponse {
+                    key: e.0,
+                    store_time: e.1,
+                })
+                .collect(),
+        )),
+        Err(_) => Err(Status::InternalServerError),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -184,7 +208,18 @@ async fn main() {
     .unwrap();
 
     let result = rocket::build()
-        .mount("/", routes![get_data, put_data, delete_data, healthcheck])
+        .mount(
+            "/",
+            routes![
+                get_data,
+                put_data,
+                delete_data,
+                healthcheck,
+                shutdown,
+                flushall,
+                keys
+            ],
+        )
         .manage(config)
         .manage(client)
         .launch()
