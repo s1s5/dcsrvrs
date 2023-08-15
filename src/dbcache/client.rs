@@ -1,25 +1,23 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use tokio::fs::{remove_file, File};
+use tokio::io::{self, AsyncRead, AsyncReadExt};
 use tokio::io::{copy, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
-use tokio::{
-    io::{self, AsyncRead, AsyncReadExt},
-    sync::Mutex,
-};
 use uuid::Uuid;
 
 use super::errors::Error;
-use super::task::*;
+use super::{ioutil, task::*};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DBCacheClient {
     blob_threshold: usize,
     size_limit: usize,
     data_root: PathBuf,
     tx: mpsc::Sender<Task>,
-    buf_list: Mutex<Vec<Vec<u8>>>,
+    buf_list: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
 impl DBCacheClient {
@@ -34,12 +32,12 @@ impl DBCacheClient {
             size_limit: size_limit,
             data_root: data_root.into(),
             tx: tx,
-            buf_list: Mutex::new(Vec::new()),
+            buf_list: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     async fn get_buf(&self) -> Vec<u8> {
-        let mut buf_list = self.buf_list.lock().await;
+        let mut buf_list = self.buf_list.lock().unwrap();
         match buf_list.pop() {
             Some(x) => x,
             None => {
@@ -49,13 +47,13 @@ impl DBCacheClient {
     }
 
     async fn del_buf(&self, buf: Vec<u8>) {
-        let mut buf_list = self.buf_list.lock().await;
+        let mut buf_list = self.buf_list.lock().unwrap();
         if buf_list.len() < 10 {
             buf_list.push(buf)
         }
     }
 
-    pub async fn get(&self, key: &str) -> Result<Option<Pin<Box<dyn AsyncRead + Send>>>, Error> {
+    pub async fn get(&self, key: &str) -> Result<Option<ioutil::Data>, Error> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Task::Get(GetTask {
@@ -249,19 +247,3 @@ impl DBCacheClient {
         }
     }
 }
-
-// impl std::clone::Clone for DBCacheClient {
-//     fn clone(&self) -> Self {
-//         DBCacheClient {
-//             blob_threshold: self.blob_threshold,
-//             data_root: self.data_root.clone(),
-//             tx: self.tx.clone(),
-//             buf_list: Mutex::new(Vec::new()),
-//         }
-//     }
-//     fn clone_from(&mut self, source: &Self) {
-//         self.blob_threshold = source.blob_threshold;
-//         self.data_root = source.data_root.clone();
-//         self.tx = source.tx.clone();
-//     }
-// }

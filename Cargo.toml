@@ -12,25 +12,30 @@ members = [".", "entity", "migration"]
 [dependencies]
 entity = { path = "entity" }
 migration = { path = "migration" } # depends on your needs
-rocket = {version="0.5.0-rc.2", features=["json"] }
-walkdir = "*"
-filetime = "*"
-env_logger = "*"
-linked-hash-map = "*"
 log = "*"
 path-clean = "*"
 tempfile = "*"
-envy = "*"
 serde = { version = "*", features = ["derive"] }
-chrono  = "*"
-tokio = { version = "1.20", features = ["macros", "rt-multi-thread", "io-util"] }
+chrono = "*"
+tokio = { version = "1.20", features = [
+    "macros",
+    "rt-multi-thread",
+    "io-util",
+    "signal",
+] }
 tracing = "*"
 tracing-subscriber = "*"
-sqlx = { version = "0.6", features = [ "runtime-tokio-rustls" , "sqlite" ] }
+sqlx = { version = "0.6", features = ["runtime-tokio-rustls", "sqlite"] }
+axum = { version = "0.6.20", features = ["headers"] }
+clap = { version = "4.3.21", features = ["derive"] }
+tower-http = { version = "0.4.3", features = ["cors"] }
+futures-util = "0.3.28"
+tokio-util = { version = "0.7.8", features = ["io"] }
+anyhow = "1.0.72"
 
 [dependencies.sea-orm]
 version = "^0"
-features = [ "sqlx-sqlite", "runtime-tokio-rustls", "macros"]
+features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"]
 
 [dependencies.uuid]
 version = "1.2.2"
@@ -39,5 +44,7 @@ features = [
     "fast-rng",          # Use a faster (but still sufficiently random) RNG
     "macro-diagnostics", # Enable better diagnostics for compile-time UUIDs
 ]
+
+
 [profile.release]
 strip = true

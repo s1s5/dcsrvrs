@@ -1,10 +1,9 @@
 use super::errors::Error;
-use std::pin::Pin;
-use tokio::io::AsyncRead;
+use super::ioutil;
 use tokio::sync::oneshot;
 
 pub struct GetTask {
-    pub tx: oneshot::Sender<Result<Option<Pin<Box<dyn AsyncRead + Send>>>, Error>>,
+    pub tx: oneshot::Sender<Result<Option<ioutil::Data>, Error>>,
     pub key: String,
 }
 pub struct SetBlobTask {

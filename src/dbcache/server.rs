@@ -1,3 +1,5 @@
+use super::errors::{DbFieldError, Error};
+use super::ioutil;
 use chrono::{DateTime, Local, Utc};
 use entity::cache;
 use log::error;
@@ -10,11 +12,6 @@ use sea_orm::{
 use sea_orm::{DbConn, QueryOrder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use tokio::io::AsyncRead;
-
-use super::errors::{DbFieldError, Error};
-use super::ioutil::ByteReader;
 
 #[derive(FromQueryResult)]
 struct LimitedCacheRow {
@@ -96,7 +93,7 @@ impl DBCache {
         self.capacity
     }
 
-    pub async fn get(&self, key: &str) -> Result<Option<Pin<Box<dyn AsyncRead + Send>>>, Error> {
+    pub async fn get(&self, key: &str) -> Result<Option<ioutil::Data>, Error> {
         let c: Option<cache::Model> = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
             .one(&self.conn)
@@ -119,12 +116,11 @@ impl DBCache {
                 }
 
                 if v.value.is_some() {
-                    Ok(Some(Box::pin(ByteReader::new(v.value.unwrap()))
-                        as Pin<Box<dyn AsyncRead + Send>>))
+                    Ok(Some(ioutil::Data::Bytes(v.value.unwrap())))
                 } else if v.filename.is_some() {
                     tokio::fs::File::open(self.data_root.join(v.filename.unwrap()))
                         .await
-                        .and_then(|f| Ok(Some(Box::pin(f) as Pin<Box<dyn AsyncRead + Send>>)))
+                        .and_then(|f| Ok(Some(ioutil::Data::File(f))))
                         .or_else(|e| Err(Error::Io(e)))
                 } else {
                     Err(Error::Schema(DbFieldError {}))
@@ -478,11 +474,20 @@ mod tests {
         assert!(r.value.unwrap().len() == 4);
 
         // dbcache経由での値の取得
-        let mut r = f.cache.get(key).await.unwrap().unwrap();
-        let mut buf: Vec<u8> = vec![0; 16];
-        let num_read = r.read(&mut buf).await.unwrap();
-        assert!(num_read == 4);
-        assert!(buf[..4] == [0, 1, 2, 3]);
+        let r = f.cache.get(key).await.unwrap().unwrap();
+        match r {
+            ioutil::Data::Bytes(b) => {
+                assert!(b.len() == 4);
+                assert!(b[..4] == [0, 1, 2, 3]);
+            }
+            ioutil::Data::File(_) => {
+                assert!(false);
+            }
+        }
+        // let mut buf: Vec<u8> = vec![0; 16];
+        // let num_read = r.read(&mut buf).await.unwrap();
+        // assert!(num_read == 4);
+        // assert!(buf[..4] == [0, 1, 2, 3]);
 
         f.cache.del(key).await.unwrap();
 
@@ -536,11 +541,22 @@ mod tests {
         assert!(r.value.is_none());
 
         // dbcache経由での値の取得
-        let mut r = f.cache.get(key).await.unwrap().unwrap();
-        let mut buf: Vec<u8> = vec![0; 16];
-        let num_read = r.read(&mut buf).await.unwrap();
-        assert!(num_read == 4);
-        assert!(buf[..4] == [0, 1, 2, 3]);
+        let r = f.cache.get(key).await.unwrap().unwrap();
+        match r {
+            ioutil::Data::Bytes(_) => {
+                assert!(false);
+            }
+            ioutil::Data::File(mut f) => {
+                let mut buf: Vec<u8> = vec![0; 16];
+                let num_read = f.read(&mut buf).await.unwrap();
+                assert!(num_read == 4);
+                assert!(buf[..4] == [0, 1, 2, 3]);
+            }
+        }
+        // let mut buf: Vec<u8> = vec![0; 16];
+        // let num_read = r.read(&mut buf).await.unwrap();
+        // assert!(num_read == 4);
+        // assert!(buf[..4] == [0, 1, 2, 3]);
 
         f.cache.del(key).await.unwrap();
         assert!(!abs_path.exists());

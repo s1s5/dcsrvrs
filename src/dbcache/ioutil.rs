@@ -32,3 +32,21 @@ impl AsyncRead for ByteReader {
         }
     }
 }
+
+pub enum Data {
+    Bytes(Vec<u8>),
+    File(tokio::fs::File),
+}
+
+impl axum::response::IntoResponse for Data {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Data::Bytes(b) => {
+                axum::response::Response::new(axum::body::boxed(axum::body::Full::from(b)))
+            }
+            Data::File(f) => axum::response::Response::new(axum::body::boxed(
+                axum::body::StreamBody::new(tokio_util::io::ReaderStream::new(f)),
+            )),
+        }
+    }
+}

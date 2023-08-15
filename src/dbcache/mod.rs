@@ -1,6 +1,6 @@
 mod client;
 mod errors;
-mod ioutil;
+pub mod ioutil;
 mod server;
 mod task;
 
@@ -45,7 +45,7 @@ pub async fn run_server(
     tokio::spawn(async move {
         // let (tx, mut rx) = mpsc::channel(32);
         // stx.send(tx);
-        // dbcache.run(&rx).await;
+        // dbcache.run(&rx).await;ioutil
         debug!("dbcache server started");
         while let Some(task) = rx.recv().await {
             let res = match task {
@@ -148,11 +148,16 @@ mod tests {
         // assert!(r.filename == None);
         // assert!(r.value.unwrap().len() == 4);
 
-        let mut r = dbc.get(key).await.unwrap().unwrap();
-        let mut buf: Vec<u8> = vec![0; 16];
-        let num_read = r.read(&mut buf).await.unwrap();
-        assert!(num_read == 4);
-        assert!(buf[..4] == [0, 1, 2, 3]);
+        let r = dbc.get(key).await.unwrap().unwrap();
+        match r {
+            ioutil::Data::Bytes(b) => {
+                assert!(b.len() == 4);
+                assert!(b[..4] == [0, 1, 2, 3]);
+            }
+            ioutil::Data::File(_) => {
+                assert!(false);
+            }
+        }
 
         dbc.del(key).await.unwrap();
 
@@ -181,11 +186,18 @@ mod tests {
         // assert!(r.filename.is_some());
         // assert!(r.value == None);
 
-        let mut r = dbc.get(key).await.unwrap().unwrap();
-        let mut buf: Vec<u8> = vec![0; 16];
-        let num_read = r.read(&mut buf).await.unwrap();
-        assert!(num_read == 4);
-        assert!(buf[..4] == [0, 1, 2, 3]);
+        let r = dbc.get(key).await.unwrap().unwrap();
+        match r {
+            ioutil::Data::Bytes(_) => {
+                assert!(false);
+            }
+            ioutil::Data::File(mut f) => {
+                let mut buf: Vec<u8> = vec![0; 16];
+                let num_read = f.read(&mut buf).await.unwrap();
+                assert!(num_read == 4);
+                assert!(buf[..4] == [0, 1, 2, 3]);
+            }
+        }
 
         dbc.del(key).await.unwrap();
 
