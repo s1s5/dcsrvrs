@@ -20,6 +20,8 @@ RUN --mount=type=cache,target=/rust/target \
 # ------------- runtime ----------------
 FROM scratch
 
+ENV RUST_LOG sqlx=error,sea_orm_migration=error,info
+
 # バイナリのコピー
 COPY --from=builder /app /app
 ENTRYPOINT [ "/app" ]
