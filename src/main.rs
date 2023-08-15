@@ -217,9 +217,9 @@ async fn main() -> anyhow::Result<()> {
 
     let router = Router::new()
         .route("/*path", get(get_data).put(put_data).delete(delete_data))
-        .route("/-/healthcheck", get(healthcheck))
-        .route("/-/flushall", post(flushall))
-        .route("/-/keys", post(keys))
+        .route("/-/healthcheck/", get(healthcheck))
+        .route("/-/flushall/", post(flushall))
+        .route("/-/keys/", post(keys))
         .layer(Extension(config))
         .layer(Extension(client))
         .layer(cors);

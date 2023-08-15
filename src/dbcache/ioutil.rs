@@ -1,4 +1,4 @@
-use std::{collections::HashMap, pin::Pin};
+use std::pin::Pin;
 use tokio::io::{AsyncRead, ReadBuf};
 
 pub struct ByteReader {
