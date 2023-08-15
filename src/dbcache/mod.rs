@@ -51,13 +51,23 @@ pub async fn run_server(
             let res = match task {
                 Task::Get(t) => t.tx.send(dbcache.get(&t.key).await).or_else(|_t| Err(())),
                 Task::SetBlob(t) => {
-                    t.tx.send(dbcache.set_blob(t.key, t.blob, t.expire_time).await)
-                        .or_else(|_t| Err(()))
+                    t.tx.send(
+                        dbcache
+                            .set_blob(t.key, t.blob, t.expire_time, t.headers)
+                            .await,
+                    )
+                    .or_else(|_t| Err(()))
                 }
                 Task::SetFile(t) => {
                     t.tx.send(
                         dbcache
-                            .set_file(t.key, t.size.try_into().unwrap(), t.filename, t.expire_time)
+                            .set_file(
+                                t.key,
+                                t.size.try_into().unwrap(),
+                                t.filename,
+                                t.expire_time,
+                                t.headers,
+                            )
                             .await,
                     )
                     .or_else(|_t| Err(()))
@@ -134,7 +144,8 @@ mod tests {
 
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
-        dbc.set(&key, Pin::new(&mut ByteReader::new(value)), None)
+        let headers = crate::headers::Headers::default();
+        dbc.set(&key, Pin::new(&mut ByteReader::new(value)), None, headers)
             .await
             .unwrap();
         // let r = cache::Entity::find()
@@ -149,12 +160,12 @@ mod tests {
         // assert!(r.value.unwrap().len() == 4);
 
         let r = dbc.get(key).await.unwrap().unwrap();
-        match r {
-            ioutil::Data::Bytes(b) => {
+        match r.data {
+            ioutil::DataInternal::Bytes(b) => {
                 assert!(b.len() == 4);
                 assert!(b[..4] == [0, 1, 2, 3]);
             }
-            ioutil::Data::File(_) => {
+            ioutil::DataInternal::File(_) => {
                 assert!(false);
             }
         }
@@ -172,7 +183,8 @@ mod tests {
         let (dbc, disposer) = run_server(f.get_path(), 2, 128, 128).await.unwrap();
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
-        dbc.set(&key, Pin::new(&mut ByteReader::new(value)), None)
+        let headers = crate::headers::Headers::default();
+        dbc.set(&key, Pin::new(&mut ByteReader::new(value)), None, headers)
             .await
             .unwrap();
         // let r = cache::Entity::find()
@@ -187,11 +199,11 @@ mod tests {
         // assert!(r.value == None);
 
         let r = dbc.get(key).await.unwrap().unwrap();
-        match r {
-            ioutil::Data::Bytes(_) => {
+        match r.data {
+            ioutil::DataInternal::Bytes(_) => {
                 assert!(false);
             }
-            ioutil::Data::File(mut f) => {
+            ioutil::DataInternal::File(mut f) => {
                 let mut buf: Vec<u8> = vec![0; 16];
                 let num_read = f.read(&mut buf).await.unwrap();
                 assert!(num_read == 4);

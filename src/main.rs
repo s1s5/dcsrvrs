@@ -39,14 +39,6 @@ fn path2key(path: PathBuf) -> PathBuf {
     path.clean()
 }
 
-// fn bytes_to_response(b: Vec<u8>) -> impl IntoResponse {
-//     b.into_response()
-// }
-
-// fn file_to_response(f: tokio::fs::File) -> impl IntoResponse {
-//     axum::body::boxed(StreamBody::new(ReaderStream::new(f)))
-// }
-
 async fn get_data(
     extract::Path(path): extract::Path<PathBuf>,
     client: Extension<DBCacheClient>,
@@ -64,8 +56,9 @@ async fn get_data(
 
 async fn put_data(
     extract::Path(path): extract::Path<PathBuf>,
+    headers: axum::http::HeaderMap,
     client: Extension<DBCacheClient>,
-    // config: Extension<Config>,
+    // // config: Extension<Config>,
     data: extract::BodyStream,
 ) -> StatusCode {
     let key: String = path2key(path).to_str().unwrap().into();
@@ -78,6 +71,7 @@ async fn put_data(
             // Pin::new(&mut data.open(config.file_size_limit.bytes())),
             Pin::new(&mut data),
             None,
+            dcsrvrs::headers::Headers::from(headers),
         )
         .await
     {

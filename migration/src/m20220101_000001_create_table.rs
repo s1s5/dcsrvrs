@@ -29,6 +29,7 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Cache::Size).big_unsigned().not_null())
                     .col(ColumnDef::new(Cache::Filename).string())
                     .col(ColumnDef::new(Cache::Value).blob(BlobSize::Medium))
+                    .col(ColumnDef::new(Cache::Attr).blob(BlobSize::Medium))
                     .to_owned(),
             )
             .await?;
@@ -63,4 +64,5 @@ enum Cache {
     Size,
     Filename,
     Value,
+    Attr,
 }

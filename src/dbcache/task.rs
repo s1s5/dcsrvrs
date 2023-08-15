@@ -11,6 +11,7 @@ pub struct SetBlobTask {
     pub key: String,
     pub blob: Vec<u8>,
     pub expire_time: Option<i64>,
+    pub headers: crate::headers::Headers,
 }
 pub struct SetFileTask {
     pub tx: oneshot::Sender<Result<(), Error>>,
@@ -18,6 +19,7 @@ pub struct SetFileTask {
     pub size: usize,
     pub filename: String,
     pub expire_time: Option<i64>,
+    pub headers: crate::headers::Headers,
 }
 pub struct DelTask {
     pub tx: oneshot::Sender<Result<u64, Error>>,

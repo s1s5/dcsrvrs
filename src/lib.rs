@@ -1,3 +1,2 @@
-#![deny(rust_2018_idioms)]
-
 pub mod dbcache;
+pub mod headers;

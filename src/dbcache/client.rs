@@ -73,14 +73,16 @@ impl DBCacheClient {
         key: &str,
         buf: &[u8],
         expire_time: Option<i64>,
+        headers: crate::headers::Headers,
     ) -> Result<(), Error> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Task::SetBlob(SetBlobTask {
-                tx: tx,
+                tx,
                 key: key.into(),
                 blob: buf.into(),
-                expire_time: expire_time,
+                expire_time,
+                headers,
             }))
             .await
             .or_else(|_e| Err(Error::SendError))?;
@@ -96,6 +98,7 @@ impl DBCacheClient {
         buf: &[u8],
         mut readable: Pin<&mut T>,
         expire_time: Option<i64>,
+        headers: crate::headers::Headers,
     ) -> Result<(), Error> {
         let id: String = Uuid::new_v4().to_string();
         let prefix = &id[..2];
@@ -118,11 +121,12 @@ impl DBCacheClient {
             let (tx, rx) = oneshot::channel();
             self.tx
                 .send(Task::SetFile(SetFileTask {
-                    tx: tx,
+                    tx,
                     key: key.into(),
                     size: size,
-                    expire_time: expire_time,
+                    expire_time,
                     filename: PathBuf::from(prefix).join(id).to_str().unwrap().into(),
+                    headers,
                 }))
                 .await
                 .or_else(|_e| Err(Error::SendError))?;
@@ -160,6 +164,7 @@ impl DBCacheClient {
         key: &str,
         mut readable: Pin<&mut T>,
         expire_time: Option<i64>,
+        headers: crate::headers::Headers,
     ) -> Result<(), Error> {
         let (buf, buf_size) = {
             let mut buf = self.get_buf().await;
@@ -175,10 +180,11 @@ impl DBCacheClient {
         };
 
         let r = if buf_size >= self.blob_threshold {
-            self.set_as_file(key, &buf[..buf_size], readable, expire_time)
+            self.set_as_file(key, &buf[..buf_size], readable, expire_time, headers)
                 .await
         } else {
-            self.set_as_blob(key, &buf[..buf_size], expire_time).await
+            self.set_as_blob(key, &buf[..buf_size], expire_time, headers)
+                .await
         };
         self.del_buf(buf).await;
         r

@@ -13,6 +13,7 @@ pub struct Model {
     pub size: i64,
     pub filename: Option<String>,
     pub value: Option<Vec<u8>>,
+    pub attr: Option<Vec<u8>>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -32,6 +32,7 @@ tower-http = { version = "0.4.3", features = ["cors"] }
 futures-util = "0.3.28"
 tokio-util = { version = "0.7.8", features = ["io"] }
 anyhow = "1.0.72"
+bincode = "1.3.3"
 
 [dependencies.sea-orm]
 version = "^0"

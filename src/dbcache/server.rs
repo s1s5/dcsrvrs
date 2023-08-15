@@ -12,6 +12,7 @@ use sea_orm::{
 use sea_orm::{DbConn, QueryOrder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::path::{Path, PathBuf};
+use tracing::debug;
 
 #[derive(FromQueryResult)]
 struct LimitedCacheRow {
@@ -59,7 +60,7 @@ impl DBCache {
         let conn = SqlxSqliteConnector::from_sqlx_sqlite_pool(sqlite_pool);
         Migrator::up(&conn, None)
             .await
-            .expect("Failed to run migrations for tests");
+            .expect("Failed to run migrations");
 
         let (mut entries, mut size) = (0, 0);
         let mut pages = cache::Entity::find()
@@ -116,11 +117,22 @@ impl DBCache {
                 }
 
                 if v.value.is_some() {
-                    Ok(Some(ioutil::Data::Bytes(v.value.unwrap())))
+                    Ok(Some(ioutil::Data {
+                        headers: bincode::deserialize(&v.attr.unwrap_or(Vec::new())).unwrap(),
+                        size: v.size.try_into().unwrap(),
+                        data: ioutil::DataInternal::Bytes(v.value.unwrap()),
+                    }))
                 } else if v.filename.is_some() {
                     tokio::fs::File::open(self.data_root.join(v.filename.unwrap()))
                         .await
-                        .and_then(|f| Ok(Some(ioutil::Data::File(f))))
+                        .and_then(|f| {
+                            Ok(Some(ioutil::Data {
+                                headers: bincode::deserialize(&v.attr.unwrap_or(Vec::new()))
+                                    .unwrap(),
+                                size: v.size.try_into().unwrap(),
+                                data: ioutil::DataInternal::File(f),
+                            }))
+                        })
                         .or_else(|e| Err(Error::Io(e)))
                 } else {
                     Err(Error::Schema(DbFieldError {}))
@@ -136,6 +148,7 @@ impl DBCache {
         blob: Option<Vec<u8>>,
         filename: Option<String>,
         expire_time: Option<i64>,
+        headers: crate::headers::Headers,
     ) -> Result<(), Error> {
         let old_size = match cache::Entity::find()
             .select_only()
@@ -149,6 +162,7 @@ impl DBCache {
             Some(r) => r.size,
             None => -1,
         };
+        debug!("old_size:{} db={},{}", old_size, self.entries, self.size);
 
         let now: DateTime<Utc> = Utc::now();
         let c = cache::ActiveModel {
@@ -159,16 +173,20 @@ impl DBCache {
             size: Set(size),
             filename: Set(filename),
             value: Set(blob),
+            attr: Set(Some(bincode::serialize(&headers).unwrap())),
         };
 
         if old_size < 0 {
             self.entries += 1;
             self.size += size as usize;
+            debug!("insert: {:?}", c);
             c.insert(&self.conn).await.or_else(|e| Err(Error::Db(e)))?;
         } else {
             self.size = ((self.size as i64) + size - old_size) as usize;
+            debug!("update: {:?}", c);
             c.update(&self.conn).await.or_else(|e| Err(Error::Db(e)))?;
         }
+        debug!("after insert db={},{}", self.entries, self.size);
         Ok(())
     }
 
@@ -177,6 +195,7 @@ impl DBCache {
         key: String,
         blob: Vec<u8>,
         expire_time: Option<i64>,
+        headers: crate::headers::Headers,
     ) -> Result<(), Error> {
         self.set_internal(
             key,
@@ -184,6 +203,7 @@ impl DBCache {
             Some(blob),
             None,
             expire_time,
+            headers,
         )
         .await?;
         self.truncate().await?;
@@ -196,8 +216,9 @@ impl DBCache {
         size: i64,
         filename: String,
         expire_time: Option<i64>,
+        headers: crate::headers::Headers,
     ) -> Result<(), Error> {
-        self.set_internal(key, size, None, Some(filename), expire_time)
+        self.set_internal(key, size, None, Some(filename), expire_time, headers)
             .await?;
         self.truncate().await?;
         Ok(())
@@ -456,7 +477,11 @@ mod tests {
 
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
-        f.cache.set_blob(key.into(), value, None).await.unwrap();
+        let headers = crate::headers::Headers::default();
+        f.cache
+            .set_blob(key.into(), value, None, headers)
+            .await
+            .unwrap();
 
         assert!(f.cache.entries == 1);
         assert!(f.cache.size == 4);
@@ -475,12 +500,12 @@ mod tests {
 
         // dbcache経由での値の取得
         let r = f.cache.get(key).await.unwrap().unwrap();
-        match r {
-            ioutil::Data::Bytes(b) => {
+        match r.data {
+            ioutil::DataInternal::Bytes(b) => {
                 assert!(b.len() == 4);
                 assert!(b[..4] == [0, 1, 2, 3]);
             }
-            ioutil::Data::File(_) => {
+            ioutil::DataInternal::File(_) => {
                 assert!(false);
             }
         }
@@ -510,6 +535,7 @@ mod tests {
             let mut writer = File::create(&abs_path).await.unwrap();
             writer.write_all(&vec![0, 1, 2, 3]).await.unwrap();
         }
+        let headers = crate::headers::Headers::default();
         f.cache
             .set_file(
                 key.into(),
@@ -521,6 +547,7 @@ mod tests {
                     .unwrap()
                     .into(),
                 None,
+                headers,
             )
             .await
             .unwrap();
@@ -542,11 +569,11 @@ mod tests {
 
         // dbcache経由での値の取得
         let r = f.cache.get(key).await.unwrap().unwrap();
-        match r {
-            ioutil::Data::Bytes(_) => {
+        match r.data {
+            ioutil::DataInternal::Bytes(_) => {
                 assert!(false);
             }
-            ioutil::Data::File(mut f) => {
+            ioutil::DataInternal::File(mut f) => {
                 let mut buf: Vec<u8> = vec![0; 16];
                 let num_read = f.read(&mut buf).await.unwrap();
                 assert!(num_read == 4);
@@ -571,20 +598,21 @@ mod tests {
     async fn test_truncate_old() {
         let mut f = TestFixture::new(12).await;
         let value = vec![0, 1, 2, 3, 4, 5];
+        let headers = crate::headers::Headers::default();
         f.cache
-            .set_blob("A".into(), value.clone(), None)
+            .set_blob("A".into(), value.clone(), None, headers.clone())
             .await
             .unwrap();
         f.cache
-            .set_blob("B".into(), value.clone(), None)
+            .set_blob("B".into(), value.clone(), None, headers.clone())
             .await
             .unwrap();
         f.cache
-            .set_blob("C".into(), value.clone(), None)
+            .set_blob("C".into(), value.clone(), None, headers.clone())
             .await
             .unwrap();
         f.cache
-            .set_blob("D".into(), value.clone(), None)
+            .set_blob("D".into(), value.clone(), None, headers.clone())
             .await
             .unwrap();
 

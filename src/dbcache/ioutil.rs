@@ -1,4 +1,4 @@
-use std::pin::Pin;
+use std::{collections::HashMap, pin::Pin};
 use tokio::io::{AsyncRead, ReadBuf};
 
 pub struct ByteReader {
@@ -33,20 +33,32 @@ impl AsyncRead for ByteReader {
     }
 }
 
-pub enum Data {
+pub struct Data {
+    pub headers: crate::headers::Headers,
+    pub size: usize,
+    pub data: DataInternal,
+}
+pub enum DataInternal {
     Bytes(Vec<u8>),
     File(tokio::fs::File),
 }
 
 impl axum::response::IntoResponse for Data {
     fn into_response(self) -> axum::response::Response {
-        match self {
-            Data::Bytes(b) => {
-                axum::response::Response::new(axum::body::boxed(axum::body::Full::from(b)))
-            }
-            Data::File(f) => axum::response::Response::new(axum::body::boxed(
-                axum::body::StreamBody::new(tokio_util::io::ReaderStream::new(f)),
-            )),
+        let mut builder = axum::response::Response::builder();
+        for (key, value) in self.headers.0.iter() {
+            builder = builder.header(key, value);
+        }
+        builder = builder.header("Content-length", self.size);
+        match self.data {
+            DataInternal::Bytes(b) => builder
+                .body(axum::body::boxed(axum::body::Full::from(b)))
+                .unwrap(),
+            DataInternal::File(f) => builder
+                .body(axum::body::boxed(axum::body::StreamBody::new(
+                    tokio_util::io::ReaderStream::new(f),
+                )))
+                .unwrap(),
         }
     }
 }
