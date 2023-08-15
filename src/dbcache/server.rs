@@ -595,26 +595,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_truncate_old() {
+    async fn test_truncate_old() -> anyhow::Result<()> {
         let mut f = TestFixture::new(12).await;
         let value = vec![0, 1, 2, 3, 4, 5];
         let headers = crate::headers::Headers::default();
         f.cache
             .set_blob("A".into(), value.clone(), None, headers.clone())
-            .await
-            .unwrap();
+            .await?;
+
         f.cache
             .set_blob("B".into(), value.clone(), None, headers.clone())
-            .await
-            .unwrap();
+            .await?;
+
         f.cache
             .set_blob("C".into(), value.clone(), None, headers.clone())
-            .await
-            .unwrap();
+            .await?;
+
         f.cache
             .set_blob("D".into(), value.clone(), None, headers.clone())
-            .await
-            .unwrap();
+            .await?;
 
         assert!(f.cache.entries == 2);
         assert!(f.cache.size == 12);
@@ -622,15 +621,81 @@ mod tests {
         assert!(f.cache.get("B".into()).await.unwrap().is_none());
         assert!(f.cache.get("C".into()).await.unwrap().is_some());
         assert!(f.cache.get("D".into()).await.unwrap().is_some());
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let data = f.cache.get("C").await?;
+        assert!(data.is_some());
+
+        f.cache
+            .set_blob("E".into(), value.clone(), None, headers.clone())
+            .await
+            .unwrap();
+        assert!(f.cache.get("C".into()).await.unwrap().is_some());
+        assert!(f.cache.get("D".into()).await.unwrap().is_none());
+        assert!(f.cache.get("E".into()).await.unwrap().is_some());
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_flushall() {
-        // TODO
+    async fn test_flushall() -> anyhow::Result<()> {
+        let mut f = TestFixture::new(12).await;
+        let value = vec![0, 1, 2, 3, 4, 5];
+        let headers = crate::headers::Headers::default();
+        f.cache
+            .set_blob("A".into(), value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("B".into(), value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("C".into(), value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("D".into(), value.clone(), None, headers.clone())
+            .await?;
+
+        assert!(f.cache.entries == 2);
+        assert!(f.cache.size == 12);
+
+        f.cache.flushall().await?;
+
+        assert!(f.cache.entries == 0);
+        assert!(f.cache.size == 0);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_keys() {
-        // TODO
+    async fn test_keys() -> anyhow::Result<()> {
+        let mut f = TestFixture::new(128).await;
+        let value = vec![0, 1, 2, 3, 4, 5];
+        let headers = crate::headers::Headers::default();
+        f.cache
+            .set_blob("A".into(), value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("B".into(), value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("C".into(), value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("D".into(), value.clone(), None, headers.clone())
+            .await?;
+
+        let keys = f.cache.keys(100, None, None, None).await?;
+
+        assert!(keys.len() == 4);
+        assert!(keys[0].0 == "A");
+
+        Ok(())
     }
 }
