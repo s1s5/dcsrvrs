@@ -216,4 +216,55 @@ mod tests {
         assert!(dbc.get(key).await.unwrap().is_none());
         disposer.dispose().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_api() -> anyhow::Result<()> {
+        let f = TestFixture::new();
+
+        let (dbc, disposer) = run_server(f.get_path(), 4, 32, 128).await.unwrap();
+
+        let stat = dbc.stat().await?;
+        assert!(
+            stat == Stat {
+                entries: 0,
+                size: 0,
+                capacity: 128
+            }
+        );
+
+        dbc.set(
+            "blobv",
+            Pin::new(&mut ByteReader::new(vec![0, 1, 2, 3])),
+            None,
+            crate::headers::Headers::default(),
+        )
+        .await?;
+
+        let keys = dbc.keys(100, None, None, None).await?;
+        assert!(keys.len() == 1);
+        assert!(keys[0].0 == "blobv".to_string());
+
+        let stat = dbc.stat().await?;
+        assert!(
+            stat == Stat {
+                entries: 1,
+                size: 4,
+                capacity: 128
+            }
+        );
+
+        dbc.flushall().await?;
+        let stat = dbc.stat().await?;
+        assert!(
+            stat == Stat {
+                entries: 0,
+                size: 0,
+                capacity: 128
+            }
+        );
+
+        disposer.dispose().await.unwrap();
+
+        Ok(())
+    }
 }

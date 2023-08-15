@@ -26,6 +26,7 @@ pub struct DelTask {
     pub key: String,
 }
 
+#[derive(PartialEq)]
 pub struct Stat {
     pub entries: usize,
     pub size: usize,
