@@ -8,6 +8,7 @@ WORKDIR /rust
 COPY Cargo.toml Cargo.lock /rust/
 COPY entity /rust/entity
 COPY migration /rust/migration
+COPY bench /rust/bench
 COPY src /rust/src
 
 # バイナリ名を変更すること

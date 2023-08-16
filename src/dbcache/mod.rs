@@ -8,6 +8,7 @@ use log::{debug, error};
 use std::fs;
 use std::path::Path;
 use tokio::sync::{mpsc, oneshot};
+use tracing::info;
 
 pub use self::client::DBCacheClient;
 pub use self::errors::*;
@@ -48,15 +49,20 @@ pub async fn run_server(
         // dbcache.run(&rx).await;ioutil
         debug!("dbcache server started");
         while let Some(task) = rx.recv().await {
+            info!("task: {:?}", task);
+            let start = std::time::Instant::now();
             let res = match task {
-                Task::Get(t) => t.tx.send(dbcache.get(&t.key).await).or_else(|_t| Err(())),
+                Task::Get(t) => {
+                    t.tx.send(dbcache.get(&t.key).await)
+                        .or_else(|t| t.map(|_| ()))
+                }
                 Task::SetBlob(t) => {
                     t.tx.send(
                         dbcache
                             .set_blob(t.key, t.blob, t.expire_time, t.headers)
                             .await,
                     )
-                    .or_else(|_t| Err(()))
+                    .or_else(|t| t.map(|_| ()))
                 }
                 Task::SetFile(t) => {
                     t.tx.send(
@@ -70,32 +76,42 @@ pub async fn run_server(
                             )
                             .await,
                     )
-                    .or_else(|_t| Err(()))
+                    .or_else(|t| t.map(|_| ()))
                 }
-                Task::Del(t) => t.tx.send(dbcache.del(&t.key).await).or_else(|_t| Err(())),
+                Task::Del(t) => {
+                    t.tx.send(dbcache.del(&t.key).await)
+                        .or_else(|t| t.map(|_| ()))
+                }
                 Task::Stat(t) => {
                     t.tx.send(Ok(Stat {
                         entries: dbcache.entries(),
                         size: dbcache.size(),
                         capacity: dbcache.capacity(),
                     }))
-                    .or_else(|_t| Err(()))
+                    .or_else(|t| t.map(|_| ()))
                 }
-                Task::FlushAll(t) => t.tx.send(dbcache.flushall().await).or_else(|_t| Err(())),
+                Task::FlushAll(t) => {
+                    t.tx.send(dbcache.flushall().await)
+                        .or_else(|t| t.map(|_| ()))
+                }
                 Task::Keys(t) => {
                     t.tx.send(dbcache.keys(t.max_num, t.key, t.store_time, t.prefix).await)
-                        .or_else(|_t| Err(()))
+                        .or_else(|t| t.map(|_| ()))
                 }
                 Task::End(t) => {
                     t.tx.send(()).unwrap();
                     break;
                 }
             };
+            info!(
+                "elapsed_time: {:10.5}",
+                (std::time::Instant::now() - start).as_secs_f64() * 1000.0
+            );
             match res {
                 Ok(_) => {}
-                Err(_) => {
-                    error!("some error occurred when send task.");
-                    break;
+                Err(e) => {
+                    error!("some error occurred when send task. {:?}", e);
+                    // break;
                 }
             };
         }
