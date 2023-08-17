@@ -104,7 +104,7 @@ pub async fn run_server(
                 }
             };
             info!(
-                "elapsed_time: {:10.5}",
+                "elapsed_time: {:10.5}[msec]",
                 (std::time::Instant::now() - start).as_secs_f64() * 1000.0
             );
             match res {

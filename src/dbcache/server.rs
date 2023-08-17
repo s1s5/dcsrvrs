@@ -38,6 +38,10 @@ pub struct DBCache {
     entries: usize,
     size: usize,
     capacity: usize,
+    truncate_interval: f64,
+    truncate_threshold: f64,
+    truncated_at: std::time::Instant,
+    truncated_size: usize,
 }
 
 impl DBCache {
@@ -81,6 +85,10 @@ impl DBCache {
             entries: entries,
             size: size as usize,
             capacity: capacity,
+            truncate_interval: 60.0,
+            truncate_threshold: 0.8,
+            truncated_at: std::time::Instant::now(),
+            truncated_size: size as usize,
         })
     }
 
@@ -256,14 +264,11 @@ impl DBCache {
         &self,
         mut pages: Paginator<'_, DatabaseConnection, SelectModel<LimitedCacheRowWithFilename>>,
         delete_all: bool,
+        goal_size: usize,
     ) -> Result<(Vec<String>, Vec<String>, usize), Error> {
         let mut keys: Vec<String> = Vec::new();
         let mut deleted_files: Vec<String> = Vec::new();
         let mut deleted_size: usize = 0;
-
-        if (!delete_all) && (self.capacity >= self.size) {
-            return Ok((vec![], vec![], 0));
-        }
 
         'outer: while let Some(el) = pages
             .fetch_and_next()
@@ -277,7 +282,7 @@ impl DBCache {
                     deleted_files.push(e.filename.unwrap());
                 }
 
-                if (!delete_all) && (self.capacity + deleted_size >= self.size) {
+                if (!delete_all) && (goal_size + deleted_size >= self.size) {
                     break 'outer;
                 }
             }
@@ -329,12 +334,13 @@ impl DBCache {
                     .into_model::<LimitedCacheRowWithFilename>()
                     .paginate(&self.conn, 100),
                 true,
+                self.capacity,
             )
             .await?;
         self.truncate_rows_truncate(keys, files, size).await
     }
 
-    async fn truncate_old(&mut self) -> Result<(usize, usize), Error> {
+    async fn truncate_old(&mut self, goal_size: usize) -> Result<(usize, usize), Error> {
         let (keys, files, size) = self
             .truncate_rows_extract_keys(
                 cache::Entity::find()
@@ -346,15 +352,30 @@ impl DBCache {
                     .into_model::<LimitedCacheRowWithFilename>()
                     .paginate(&self.conn, 100),
                 false,
+                goal_size,
             )
             .await?;
         self.truncate_rows_truncate(keys, files, size).await
     }
 
     async fn truncate(&mut self) -> Result<(usize, usize), Error> {
-        // TODO: 毎回やるのは重いかもしれないので、適当にスキップすべきかもしれない
-        let (expired_entries, expired_size) = self.truncate_expired().await?;
-        let (old_deleted_entries, old_deleted_size) = self.truncate_old().await?;
+        let (expired_entries, expired_size) = if (self.truncated_at
+            + std::time::Duration::from_secs_f64(self.truncate_interval))
+            < std::time::Instant::now()
+        {
+            self.truncate_expired().await?
+        } else {
+            (0, 0)
+        };
+
+        let (old_deleted_entries, old_deleted_size) = if self.size < self.capacity {
+            (0, 0)
+        } else {
+            self.truncated_size = self.size;
+            let goal_size = (self.truncate_threshold * (self.capacity as f64)) as usize;
+            self.truncate_old(goal_size).await?
+        };
+
         Ok((
             expired_entries + old_deleted_entries,
             expired_size + old_deleted_size,
@@ -381,6 +402,7 @@ impl DBCache {
                         .into_model::<LimitedCacheRowWithFilename>()
                         .paginate(&self.conn, 1000),
                     true,
+                    0,
                 )
                 .await?;
             let (e, s) = self.truncate_rows_truncate(keys, files, size).await?;
