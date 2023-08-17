@@ -8,3 +8,4 @@
 # test
 - `cargo test`
 - `cargo tarpaulin --skip-clean -o html --output-dir htmlcov`
+- `cargo run -p bench -- --server http://localhost:8000`

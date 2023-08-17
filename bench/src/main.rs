@@ -95,44 +95,34 @@ struct BenchResult {
     num_hit: usize,
     num_miss: usize,
     num_error: usize,
+    sent_bytes: usize,
+    recv_bytes: usize,
 }
 
 impl BenchResult {
-    fn hit(duration: f64) -> Self {
-        BenchResult {
-            get_response_time: Stat::new(duration),
-            put_response_time: Stat::default(),
-            num_hit: 1,
-            num_miss: 0,
-            num_error: 0,
-        }
+    fn hit(duration: f64, nbytes: usize) -> Self {
+        let mut s = BenchResult::default();
+        s.get_response_time = Stat::new(duration);
+        s.num_hit = 1;
+        s.recv_bytes += nbytes;
+        s
     }
     fn miss(duration: f64) -> Self {
-        BenchResult {
-            get_response_time: Stat::new(duration),
-            put_response_time: Stat::default(),
-            num_hit: 0,
-            num_miss: 1,
-            num_error: 0,
-        }
+        let mut s = BenchResult::default();
+        s.get_response_time = Stat::new(duration);
+        s.num_miss = 1;
+        s
     }
-    fn put(duration: f64) -> Self {
-        BenchResult {
-            get_response_time: Stat::default(),
-            put_response_time: Stat::new(duration),
-            num_hit: 0,
-            num_miss: 0,
-            num_error: 0,
-        }
+    fn put(duration: f64, nbytes: usize) -> Self {
+        let mut s = BenchResult::default();
+        s.put_response_time = Stat::new(duration);
+        s.sent_bytes += nbytes;
+        s
     }
     fn error() -> Self {
-        BenchResult {
-            get_response_time: Stat::default(),
-            put_response_time: Stat::default(),
-            num_hit: 0,
-            num_miss: 0,
-            num_error: 1,
-        }
+        let mut s = BenchResult::default();
+        s.num_error = 1;
+        s
     }
 
     fn accum(&mut self, r: BenchResult) {
@@ -141,6 +131,8 @@ impl BenchResult {
         self.num_hit += r.num_hit;
         self.num_miss += r.num_miss;
         self.num_error += r.num_error;
+        self.sent_bytes += r.sent_bytes;
+        self.recv_bytes += r.recv_bytes;
     }
 }
 
@@ -158,6 +150,12 @@ impl fmt::Display for BenchResult {
             (self.num_hit as f64) / total_access,
             (self.num_miss as f64) / total_access,
             (self.num_error as f64) / total_access
+        )?;
+        write!(
+            f,
+            "\nsent: {:8.3}, recv: {:8.3} [M]",
+            (self.sent_bytes as f64) / (1024.0 * 1024.0),
+            (self.recv_bytes as f64) / (1024.0 * 1024.0),
         )
     }
 }
@@ -192,11 +190,12 @@ impl Client {
             let chunk = chunk.unwrap();
             buf.extend(chunk.to_vec());
         }
+        let nbytes = buf.len();
         let duration = std::time::Instant::now() - start_time;
         let eq = key.size == buf.len() && key.sha256 == sha256::digest(buf);
 
         if eq && resp.status() == StatusCode::OK {
-            BenchResult::hit(duration.as_secs_f64())
+            BenchResult::hit(duration.as_secs_f64(), nbytes)
         } else {
             self.buffer = self
                 .buffer
@@ -254,7 +253,7 @@ impl Client {
             self.buffer = self.buffer[1..].iter().cloned().collect();
         }
 
-        BenchResult::put(duration.as_secs_f64())
+        BenchResult::put(duration.as_secs_f64(), size)
     }
 
     async fn exec(&mut self) -> BenchResult {
