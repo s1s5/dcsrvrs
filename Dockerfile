@@ -1,5 +1,5 @@
 # ------------- build ----------------
-FROM clux/muslrust:1.67.1 as builder
+FROM clux/muslrust:1.77.1-stable as builder
 
 RUN mkdir -p /rust
 WORKDIR /rust

@@ -103,10 +103,7 @@ pub async fn run_server(
                     break;
                 }
             };
-            info!(
-                "elapsed_time: {:10.5}[msec]",
-                (std::time::Instant::now() - start).as_secs_f64() * 1000.0
-            );
+            info!("elapsed_time: {:?}", start.elapsed());
             match res {
                 Ok(_) => {}
                 Err(e) => {
