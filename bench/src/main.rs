@@ -54,7 +54,7 @@ impl Stat {
         }
     }
     fn accum(&mut self, s: Stat) {
-        self.buf.extend(s.buf.into_iter());
+        self.buf.extend(s.buf);
     }
     fn min(&self) -> f64 {
         self.buf.iter().fold(1.0e100, |a, b| f64::min(a, *b))
@@ -101,28 +101,32 @@ struct BenchResult {
 
 impl BenchResult {
     fn hit(duration: f64, nbytes: usize) -> Self {
-        let mut s = BenchResult::default();
-        s.get_response_time = Stat::new(duration);
-        s.num_hit = 1;
-        s.recv_bytes += nbytes;
-        s
+        BenchResult {
+            get_response_time: Stat::new(duration),
+            num_hit: 1,
+            recv_bytes: nbytes,
+            ..Default::default()
+        }
     }
     fn miss(duration: f64) -> Self {
-        let mut s = BenchResult::default();
-        s.get_response_time = Stat::new(duration);
-        s.num_miss = 1;
-        s
+        BenchResult {
+            get_response_time: Stat::new(duration),
+            num_miss: 1,
+            ..Default::default()
+        }
     }
     fn put(duration: f64, nbytes: usize) -> Self {
-        let mut s = BenchResult::default();
-        s.put_response_time = Stat::new(duration);
-        s.sent_bytes += nbytes;
-        s
+        BenchResult {
+            put_response_time: Stat::new(duration),
+            sent_bytes: nbytes,
+            ..Default::default()
+        }
     }
     fn error() -> Self {
-        let mut s = BenchResult::default();
-        s.num_error = 1;
-        s
+        BenchResult {
+            num_error: 1,
+            ..Default::default()
+        }
     }
 
     fn accum(&mut self, r: BenchResult) {
@@ -250,14 +254,14 @@ impl Client {
         }
         self.buffer.push(Data { uri, sha256, size });
         if self.buffer.len() >= self.config.user_buffer_length {
-            self.buffer = self.buffer[1..].iter().cloned().collect();
+            self.buffer = self.buffer[1..].to_vec();
         }
 
         BenchResult::put(duration.as_secs_f64(), size)
     }
 
     async fn exec(&mut self) -> BenchResult {
-        if self.buffer.len() == 0 || rand::random::<f64>() > self.config.get_ratio {
+        if self.buffer.is_empty() || rand::random::<f64>() > self.config.get_ratio {
             self.put().await
         } else {
             self.get().await

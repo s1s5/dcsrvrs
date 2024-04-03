@@ -12,7 +12,7 @@ use sea_orm::{
 use sea_orm::{DbConn, QueryOrder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::path::{Path, PathBuf};
-use tracing::debug;
+use tracing::{debug, trace};
 
 #[derive(FromQueryResult)]
 struct LimitedCacheRow {
@@ -170,7 +170,10 @@ impl DBCache {
             Some(r) => r.size,
             None => -1,
         };
-        debug!("old_size:{} db={},{}", old_size, self.entries, self.size);
+        debug!(
+            "old_size:{} entries={}, bytes={}",
+            old_size, self.entries, self.size
+        );
 
         let now: DateTime<Utc> = Utc::now();
         let c = cache::ActiveModel {
@@ -187,14 +190,17 @@ impl DBCache {
         if old_size < 0 {
             self.entries += 1;
             self.size += size as usize;
-            debug!("insert: {:?}", c);
+            trace!("insert: {:?}", c);
             c.insert(&self.conn).await.map_err(Error::Db)?;
         } else {
             self.size = ((self.size as i64) + size - old_size) as usize;
-            debug!("update: {:?}", c);
+            trace!("update: {:?}", c);
             c.update(&self.conn).await.map_err(Error::Db)?;
         }
-        debug!("after insert db={},{}", self.entries, self.size);
+        debug!(
+            "after insert entries={}, bytes={}",
+            self.entries, self.size
+        );
         Ok(())
     }
 
@@ -351,6 +357,11 @@ impl DBCache {
     }
 
     async fn truncate(&mut self) -> Result<(usize, usize), Error> {
+        trace!(
+            "before truncate entires={}, bytes={}",
+            self.entries,
+            self.size
+        );
         let (expired_entries, expired_size) = if (self.truncated_at
             + std::time::Duration::from_secs_f64(self.truncate_interval))
             < std::time::Instant::now()
@@ -359,6 +370,11 @@ impl DBCache {
         } else {
             (0, 0)
         };
+        trace!(
+            "after truncate_expired entires={}, bytes={}, expired.entries={expired_entries}, expired.bytes={expired_size}",
+            self.entries,
+            self.size,
+        );
 
         let (old_deleted_entries, old_deleted_size) = if self.size < self.capacity {
             (0, 0)
@@ -367,6 +383,11 @@ impl DBCache {
             let goal_size = (self.truncate_threshold * (self.capacity as f64)) as usize;
             self.truncate_old(goal_size).await?
         };
+        trace!(
+            "after truncate_old entires={}, bytes={}, old.entries={old_deleted_entries}, old.bytes={old_deleted_size}",
+            self.entries,
+            self.size
+        );
 
         Ok((
             expired_entries + old_deleted_entries,
@@ -610,13 +631,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncate_old() -> anyhow::Result<()> {
-        let mut f = TestFixture::new(12).await;
+        let mut f = TestFixture::new((13.0 / 0.8f64).ceil() as usize).await;
         let value = vec![0, 1, 2, 3, 4, 5];
         let headers = crate::headers::Headers::default();
         f.cache
             .set_blob("A".into(), value.clone(), None, headers.clone())
             .await?;
-
         f.cache
             .set_blob("B".into(), value.clone(), None, headers.clone())
             .await?;
@@ -654,7 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_flushall() -> anyhow::Result<()> {
-        let mut f = TestFixture::new(12).await;
+        let mut f = TestFixture::new((13.0 / 0.8f64).ceil() as usize).await;
         let value = vec![0, 1, 2, 3, 4, 5];
         let headers = crate::headers::Headers::default();
         f.cache
