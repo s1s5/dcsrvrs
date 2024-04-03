@@ -210,7 +210,7 @@ async fn main() -> anyhow::Result<()> {
         config.capacity.try_into().unwrap(),
     )
     .await
-    .unwrap();
+    .expect("failed to run cache server");
 
     let cors = tower_http::cors::CorsLayer::new()
         .allow_credentials(false)
@@ -228,11 +228,14 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await?;
     tracing::info!("listening on {}", listener.local_addr()?);
-    axum::serve(listener, router)
+    let r = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        .await;
 
-    disposer.dispose().await.unwrap();
+    disposer.dispose().await?;
+    // panic after dispose
+    r?;
+
     info!("server shutdown");
 
     Ok(())
