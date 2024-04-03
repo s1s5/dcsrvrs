@@ -28,10 +28,10 @@ impl DBCacheClient {
         size_limit: usize,
     ) -> DBCacheClient {
         DBCacheClient {
-            blob_threshold: blob_threshold,
-            size_limit: size_limit,
+            blob_threshold,
+            size_limit,
             data_root: data_root.into(),
-            tx: tx,
+            tx,
             buf_list: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -57,11 +57,11 @@ impl DBCacheClient {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Task::Get(GetTask {
-                tx: tx,
+                tx,
                 key: key.into(),
             }))
             .await
-            .or_else(|_e| Err(Error::SendError))?;
+            .map_err(|_e| Error::SendError)?;
         match rx.await {
             Ok(r) => r,
             Err(e) => Err(Error::RecvError(e)),
@@ -85,7 +85,7 @@ impl DBCacheClient {
                 headers,
             }))
             .await
-            .or_else(|_e| Err(Error::SendError))?;
+            .map_err(|_e| Error::SendError)?;
         match rx.await {
             Ok(r) => r,
             Err(e) => Err(Error::RecvError(e)),
@@ -103,41 +103,40 @@ impl DBCacheClient {
         let id: String = Uuid::new_v4().to_string();
         let prefix = &id[..2];
         let path = self.data_root.join(prefix).join(&id);
-        fs::create_dir_all(&path.parent().unwrap()).or_else(|e| Err(Error::Io(e)))?;
-        let mut writer = File::create(&path).await.or_else(|e| Err(Error::Io(e)))?;
-        writer.write_all(buf).await.or_else(|e| Err(Error::Io(e)))?;
+        fs::create_dir_all(path.parent().unwrap()).map_err(Error::Io)?;
+        let mut writer = File::create(&path).await.map_err(Error::Io)?;
+        writer.write_all(buf).await.map_err(Error::Io)?;
 
-        let num_wrote = copy(&mut readable, &mut writer)
-            .await
-            .or_else(|e| Err(Error::Io(e)))?;
+        let num_wrote = copy(&mut readable, &mut writer).await.map_err(Error::Io)?;
 
         let size = (buf.len() as u64 + num_wrote).try_into().unwrap();
         if size >= self.size_limit {
-            remove_file(&path).await.or_else(|e| Err(Error::Io(e)))?;
+            remove_file(&path).await.map_err(Error::Io)?;
             return Err(Error::FileSizeLimitExceeded);
         }
 
-        match {
+        let res = {
             let (tx, rx) = oneshot::channel();
             self.tx
                 .send(Task::SetFile(SetFileTask {
                     tx,
                     key: key.into(),
-                    size: size,
+                    size,
                     expire_time,
                     filename: PathBuf::from(prefix).join(id).to_str().unwrap().into(),
                     headers,
                 }))
                 .await
-                .or_else(|_e| Err(Error::SendError))?;
+                .map_err(|_e| Error::SendError)?;
             match rx.await {
                 Ok(r) => r,
                 Err(e) => Err(Error::RecvError(e)),
             }
-        } {
+        };
+        match res {
             Ok(t) => Ok(t),
             Err(e) => {
-                remove_file(&path).await.or_else(|e| Err(Error::Io(e)))?;
+                remove_file(&path).await.map_err(Error::Io)?;
                 Err(e)
             }
         }
@@ -146,7 +145,7 @@ impl DBCacheClient {
     async fn read_eager<T: AsyncRead>(
         &self,
         readable: &mut Pin<&mut T>,
-        buf: &mut Vec<u8>,
+        buf: &mut [u8],
     ) -> Result<usize, io::Error> {
         let mut read = 0;
         while read < buf.len() {
@@ -175,7 +174,7 @@ impl DBCacheClient {
             let read = self
                 .read_eager(&mut readable, &mut buf)
                 .await
-                .or_else(|e| Err(Error::Io(e)))?;
+                .map_err(Error::Io)?;
             (buf, read)
         };
 
@@ -194,11 +193,11 @@ impl DBCacheClient {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Task::Del(DelTask {
-                tx: tx,
+                tx,
                 key: key.into(),
             }))
             .await
-            .or_else(|_e| Err(Error::SendError))?;
+            .map_err(|_e| Error::SendError)?;
         match rx.await {
             Ok(r) => r,
             Err(e) => Err(Error::RecvError(e)),
@@ -208,9 +207,9 @@ impl DBCacheClient {
     pub async fn stat(&self) -> Result<Stat, Error> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Task::Stat(StatTask { tx: tx }))
+            .send(Task::Stat(StatTask { tx }))
             .await
-            .or_else(|_e| Err(Error::SendError))?;
+            .map_err(|_e| Error::SendError)?;
         match rx.await {
             Ok(r) => r,
             Err(e) => Err(Error::RecvError(e)),
@@ -220,9 +219,9 @@ impl DBCacheClient {
     pub async fn flushall(&self) -> Result<(usize, usize), Error> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Task::FlushAll(FlushAllTask { tx: tx }))
+            .send(Task::FlushAll(FlushAllTask { tx }))
             .await
-            .or_else(|_e| Err(Error::SendError))?;
+            .map_err(|_e| Error::SendError)?;
         match rx.await {
             Ok(r) => r,
             Err(e) => Err(Error::RecvError(e)),
@@ -239,14 +238,14 @@ impl DBCacheClient {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Task::Keys(KeysTask {
-                tx: tx,
-                max_num: max_num,
-                key: key,
-                store_time: store_time,
-                prefix: prefix,
+                tx,
+                max_num,
+                key,
+                store_time,
+                prefix,
             }))
             .await
-            .or_else(|_e| Err(Error::SendError))?;
+            .map_err(|_e| Error::SendError)?;
         match rx.await {
             Ok(r) => r,
             Err(e) => Err(Error::RecvError(e)),

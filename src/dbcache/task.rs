@@ -3,7 +3,7 @@ use super::ioutil;
 use derivative::Derivative;
 use tokio::sync::oneshot;
 
-fn show_len(blob: &Vec<u8>, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+fn show_len(blob: &[u8], fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
     write!(fmt, "{}", blob.len())
 }
 

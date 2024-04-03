@@ -10,12 +10,9 @@ use dcsrvrs::dbcache::{run_server, DBCacheClient};
 use futures_util::TryStreamExt;
 use path_clean::PathClean;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::{error, fmt};
-use tokio::signal::ctrl_c;
-use tokio::signal::unix::{signal, SignalKind};
 use tracing::{debug, info};
 
 #[derive(Parser, Debug, Clone)]
@@ -59,10 +56,14 @@ async fn put_data(
     headers: axum::http::HeaderMap,
     client: Extension<DBCacheClient>,
     // // config: Extension<Config>,
-    data: extract::BodyStream,
+    request: axum::extract::Request,
 ) -> StatusCode {
     let key: String = path2key(path).to_str().unwrap().into();
-    let data = data.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
+
+    let data = request
+        .into_body()
+        .into_data_stream()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
     let mut data = tokio_util::io::StreamReader::new(data);
 
     match client
@@ -224,24 +225,9 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(client))
         .layer(cors);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
-    let server = axum::Server::bind(&addr).serve(router.into_make_service());
-
-    info!("server listening {:?}", addr);
-
-    server
-        .with_graceful_shutdown(async {
-            let mut sig_int = signal(SignalKind::interrupt()).unwrap();
-            let mut sig_term = signal(SignalKind::terminate()).unwrap();
-            tokio::select! {
-                _ = sig_int.recv() => debug!("receive SIGINT"),
-                _ = sig_term.recv() => debug!("receive SIGTERM"),
-                _ = ctrl_c() => debug!("receive Ctrl C"),
-            }
-            // rx.await.ok();
-            debug!("gracefully shutting down");
-        })
-        .await?;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await?;
+    tracing::info!("listening on {}", listener.local_addr()?);
+    axum::serve(listener, router).await?;
 
     disposer.dispose().await.unwrap();
     info!("server shutdown");

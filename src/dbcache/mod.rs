@@ -23,10 +23,10 @@ impl DBCacheDisposer {
     pub async fn dispose(self) -> Result<(), Error> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Task::End(EndTask { tx: tx }))
+            .send(Task::End(EndTask { tx }))
             .await
-            .or_else(|_e| Err(Error::SendError))?;
-        rx.await.or_else(|e| Err(Error::RecvError(e)))
+            .map_err(|_e| Error::SendError)?;
+        rx.await.map_err(Error::RecvError)
     }
 }
 
@@ -121,7 +121,7 @@ pub async fn run_server(
 
     Ok((
         DBCacheClient::new(&data_root, tx.clone(), blob_threshold, size_limit),
-        DBCacheDisposer { tx: tx },
+        DBCacheDisposer { tx },
     ))
 }
 
@@ -161,7 +161,7 @@ mod tests {
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
         let headers = crate::headers::Headers::default();
-        dbc.set(&key, Pin::new(&mut ByteReader::new(value)), None, headers)
+        dbc.set(key, Pin::new(&mut ByteReader::new(value)), None, headers)
             .await
             .unwrap();
         // let r = cache::Entity::find()
@@ -182,7 +182,7 @@ mod tests {
                 assert!(b[..4] == [0, 1, 2, 3]);
             }
             ioutil::DataInternal::File(_) => {
-                assert!(false);
+                panic!();
             }
         }
 
@@ -200,7 +200,7 @@ mod tests {
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
         let headers = crate::headers::Headers::default();
-        dbc.set(&key, Pin::new(&mut ByteReader::new(value)), None, headers)
+        dbc.set(key, Pin::new(&mut ByteReader::new(value)), None, headers)
             .await
             .unwrap();
         // let r = cache::Entity::find()
@@ -217,7 +217,7 @@ mod tests {
         let r = dbc.get(key).await.unwrap().unwrap();
         match r.data {
             ioutil::DataInternal::Bytes(_) => {
-                assert!(false);
+                panic!();
             }
             ioutil::DataInternal::File(mut f) => {
                 let mut buf: Vec<u8> = vec![0; 16];
@@ -258,7 +258,7 @@ mod tests {
 
         let keys = dbc.keys(100, None, None, None).await?;
         assert!(keys.len() == 1);
-        assert!(keys[0].0 == "blobv".to_string());
+        assert!(keys[0].0 == *"blobv");
 
         let stat = dbc.stat().await?;
         assert!(

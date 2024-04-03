@@ -80,11 +80,11 @@ impl DBCache {
         }
 
         Ok(DBCache {
-            conn: conn,
+            conn,
             data_root: data_root.into(),
-            entries: entries,
+            entries,
             size: size as usize,
-            capacity: capacity,
+            capacity,
             truncate_interval: 60.0,
             truncate_threshold: 0.8,
             truncated_at: std::time::Instant::now(),
@@ -107,7 +107,7 @@ impl DBCache {
             .filter(cache::Column::Key.eq(key))
             .one(&self.conn)
             .await
-            .or_else(|e| Err(Error::Db(e)))?;
+            .map_err(Error::Db)?;
         match c {
             None => Ok(None),
             Some(v) => {
@@ -121,7 +121,7 @@ impl DBCache {
                     // アクセス日時の更新
                     let mut av: cache::ActiveModel = v.clone().into();
                     av.access_time = Set(Local::now().timestamp());
-                    av.update(&self.conn).await.or_else(|e| Err(Error::Db(e)))?;
+                    av.update(&self.conn).await.map_err(Error::Db)?;
                 }
 
                 if v.value.is_some() {
@@ -133,15 +133,15 @@ impl DBCache {
                 } else if v.filename.is_some() {
                     tokio::fs::File::open(self.data_root.join(v.filename.unwrap()))
                         .await
-                        .and_then(|f| {
-                            Ok(Some(ioutil::Data {
+                        .map(|f| {
+                            Some(ioutil::Data {
                                 headers: bincode::deserialize(&v.attr.unwrap_or(Vec::new()))
                                     .unwrap(),
                                 size: v.size.try_into().unwrap(),
                                 data: ioutil::DataInternal::File(f),
-                            }))
+                            })
                         })
-                        .or_else(|e| Err(Error::Io(e)))
+                        .map_err(Error::Io)
                 } else {
                     Err(Error::Schema(DbFieldError {}))
                 }
@@ -165,7 +165,7 @@ impl DBCache {
             .into_model::<LimitedCacheRow>()
             .one(&self.conn)
             .await
-            .or_else(|e| Err(Error::Db(e)))?
+            .map_err(Error::Db)?
         {
             Some(r) => r.size,
             None => -1,
@@ -188,11 +188,11 @@ impl DBCache {
             self.entries += 1;
             self.size += size as usize;
             debug!("insert: {:?}", c);
-            c.insert(&self.conn).await.or_else(|e| Err(Error::Db(e)))?;
+            c.insert(&self.conn).await.map_err(Error::Db)?;
         } else {
             self.size = ((self.size as i64) + size - old_size) as usize;
             debug!("update: {:?}", c);
-            c.update(&self.conn).await.or_else(|e| Err(Error::Db(e)))?;
+            c.update(&self.conn).await.map_err(Error::Db)?;
         }
         debug!("after insert db={},{}", self.entries, self.size);
         Ok(())
@@ -237,22 +237,18 @@ impl DBCache {
             .filter(cache::Column::Key.eq(key))
             .one(&self.conn)
             .await
-            .or_else(|e| Err(Error::Db(e)))?;
+            .map_err(Error::Db)?;
         Ok(match c {
             Some(x) => {
                 self.entries -= 1;
                 self.size -= x.size as usize;
 
                 let filename = x.filename.clone();
-                let s = x
-                    .delete(&self.conn)
-                    .await
-                    .or_else(|e| Err(Error::Db(e)))?
-                    .rows_affected;
+                let s = x.delete(&self.conn).await.map_err(Error::Db)?.rows_affected;
                 if let Some(filename) = filename {
                     tokio::fs::remove_file(self.data_root.join(filename))
                         .await
-                        .or_else(|e| Err(Error::Io(e)))?;
+                        .map_err(Error::Io)?;
                 }
                 s
             }
@@ -270,11 +266,7 @@ impl DBCache {
         let mut deleted_files: Vec<String> = Vec::new();
         let mut deleted_size: usize = 0;
 
-        'outer: while let Some(el) = pages
-            .fetch_and_next()
-            .await
-            .or_else(|e| Err(Error::Db(e)))?
-        {
+        'outer: while let Some(el) = pages.fetch_and_next().await.map_err(Error::Db)? {
             for e in el {
                 deleted_size += e.size as usize;
                 keys.push(e.key);
@@ -296,7 +288,7 @@ impl DBCache {
         deleted_files: Vec<String>,
         deleted_size: usize,
     ) -> Result<(usize, usize), Error> {
-        if keys.len() == 0 {
+        if keys.is_empty() {
             return Ok((0, 0));
         }
         let del_entries = keys.len();
@@ -305,7 +297,7 @@ impl DBCache {
             .filter(cache::Column::Key.is_in(keys))
             .exec(&self.conn)
             .await
-            .or_else(|e| Err(Error::Db(e)))?;
+            .map_err(Error::Db)?;
 
         self.entries -= del_entries;
         self.size -= deleted_size;
@@ -437,8 +429,8 @@ impl DBCache {
             qs
         };
 
-        let qs = if prefix.is_some() {
-            qs.filter(cache::Column::Key.starts_with(&prefix.unwrap()))
+        let qs = if let Some(prefix) = prefix {
+            qs.filter(cache::Column::Key.starts_with(&prefix))
         } else {
             qs
         };
@@ -446,14 +438,14 @@ impl DBCache {
         let data = qs
             .order_by_asc(cache::Column::StoreTime)
             .order_by_asc(cache::Column::Key)
-            .limit(max_num.try_into().unwrap())
+            .limit(Some(max_num.try_into().unwrap()))
             .select_only()
             .column(cache::Column::Key)
             .column(cache::Column::StoreTime)
             .into_model::<CacheKeyAndStoreTime>()
             .all(&self.conn)
             .await
-            .or_else(|e| Err(Error::Db(e)))?;
+            .map_err(Error::Db)?;
 
         Ok(data.into_iter().map(|e| (e.key, e.store_time)).collect())
     }
@@ -488,7 +480,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-                tempdir: tempdir,
+                tempdir,
             }
         }
     }
@@ -517,7 +509,7 @@ mod tests {
             .unwrap();
 
         assert!(r.size == 4);
-        assert!(r.filename == None);
+        assert!(r.filename.is_none());
         assert!(r.value.unwrap().len() == 4);
 
         // dbcache経由での値の取得
@@ -528,7 +520,7 @@ mod tests {
                 assert!(b[..4] == [0, 1, 2, 3]);
             }
             ioutil::DataInternal::File(_) => {
-                assert!(false);
+                panic!();
             }
         }
         // let mut buf: Vec<u8> = vec![0; 16];
@@ -555,7 +547,7 @@ mod tests {
                 .await
                 .unwrap();
             let mut writer = File::create(&abs_path).await.unwrap();
-            writer.write_all(&vec![0, 1, 2, 3]).await.unwrap();
+            writer.write_all(&[0, 1, 2, 3]).await.unwrap();
         }
         let headers = crate::headers::Headers::default();
         f.cache
@@ -593,7 +585,7 @@ mod tests {
         let r = f.cache.get(key).await.unwrap().unwrap();
         match r.data {
             ioutil::DataInternal::Bytes(_) => {
-                assert!(false);
+                panic!();
             }
             ioutil::DataInternal::File(mut f) => {
                 let mut buf: Vec<u8> = vec![0; 16];
@@ -639,10 +631,10 @@ mod tests {
 
         assert!(f.cache.entries == 2);
         assert!(f.cache.size == 12);
-        assert!(f.cache.get("A".into()).await.unwrap().is_none());
-        assert!(f.cache.get("B".into()).await.unwrap().is_none());
-        assert!(f.cache.get("C".into()).await.unwrap().is_some());
-        assert!(f.cache.get("D".into()).await.unwrap().is_some());
+        assert!(f.cache.get("A").await.unwrap().is_none());
+        assert!(f.cache.get("B").await.unwrap().is_none());
+        assert!(f.cache.get("C").await.unwrap().is_some());
+        assert!(f.cache.get("D").await.unwrap().is_some());
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
@@ -653,9 +645,9 @@ mod tests {
             .set_blob("E".into(), value.clone(), None, headers.clone())
             .await
             .unwrap();
-        assert!(f.cache.get("C".into()).await.unwrap().is_some());
-        assert!(f.cache.get("D".into()).await.unwrap().is_none());
-        assert!(f.cache.get("E".into()).await.unwrap().is_some());
+        assert!(f.cache.get("C").await.unwrap().is_some());
+        assert!(f.cache.get("D").await.unwrap().is_none());
+        assert!(f.cache.get("E").await.unwrap().is_some());
 
         Ok(())
     }

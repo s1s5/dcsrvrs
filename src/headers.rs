@@ -1,14 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Headers(pub HashMap<String, String>);
 
 impl Headers {
-    pub fn default() -> Self {
-        Headers(HashMap::new())
-    }
-
     pub fn from(headers: axum::http::HeaderMap) -> Self {
         Headers(
             headers

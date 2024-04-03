@@ -8,7 +8,7 @@ pub struct ByteReader {
 
 impl ByteReader {
     pub fn new(data: Vec<u8>) -> ByteReader {
-        ByteReader { pos: 0, data: data }
+        ByteReader { pos: 0, data }
     }
 }
 
@@ -19,17 +19,16 @@ impl AsyncRead for ByteReader {
         buf: &mut ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         let me = self.get_mut();
-        loop {
-            let n = std::cmp::min(me.data.len() - me.pos, buf.remaining());
-            buf.put_slice(&me.data[me.pos..][..n]);
-            me.pos += n;
 
-            // if me.pos == me.data.len() {
-            //     me.data.truncate(0);
-            //     me.pos = 0;
-            // };
-            return std::task::Poll::Ready(Ok(()));
-        }
+        let n = std::cmp::min(me.data.len() - me.pos, buf.remaining());
+        buf.put_slice(&me.data[me.pos..][..n]);
+        me.pos += n;
+
+        // if me.pos == me.data.len() {
+        //     me.data.truncate(0);
+        //     me.pos = 0;
+        // };
+        std::task::Poll::Ready(Ok(()))
     }
 }
 
@@ -51,13 +50,11 @@ impl axum::response::IntoResponse for Data {
         }
         builder = builder.header("Content-length", self.size);
         match self.data {
-            DataInternal::Bytes(b) => builder
-                .body(axum::body::boxed(axum::body::Full::from(b)))
-                .unwrap(),
+            DataInternal::Bytes(b) => builder.body(axum::body::Body::from(b)).unwrap(),
             DataInternal::File(f) => builder
-                .body(axum::body::boxed(axum::body::StreamBody::new(
+                .body(axum::body::Body::from_stream(
                     tokio_util::io::ReaderStream::new(f),
-                )))
+                ))
                 .unwrap(),
         }
     }
