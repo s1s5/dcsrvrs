@@ -6,7 +6,7 @@ pub struct DbFieldError;
 
 impl std::fmt::Display for DbFieldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid first item to double")
+        write!(f, "DbFieldError")
     }
 }
 
@@ -33,7 +33,7 @@ pub enum Error {
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid first item to double")
+        write!(f, "Error {:?}", self)
     }
 }
 

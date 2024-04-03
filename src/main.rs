@@ -12,6 +12,7 @@ use path_clean::PathClean;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::{error, fmt};
 use tokio::signal;
 use tracing::{debug, info};
@@ -39,7 +40,7 @@ fn path2key(path: PathBuf) -> PathBuf {
 
 async fn get_data(
     extract::Path(path): extract::Path<PathBuf>,
-    client: Extension<DBCacheClient>,
+    client: Extension<Arc<DBCacheClient>>,
 ) -> impl IntoResponse {
     // Result<dyn Stream<Item = Result<bytes::Bytes>>, StatusCode> {
     let key: String = path2key(path).to_str().unwrap().into();
@@ -55,11 +56,14 @@ async fn get_data(
 async fn put_data(
     extract::Path(path): extract::Path<PathBuf>,
     headers: axum::http::HeaderMap,
-    client: Extension<DBCacheClient>,
+    client: Extension<Arc<DBCacheClient>>,
     // // config: Extension<Config>,
     request: axum::extract::Request,
 ) -> StatusCode {
     let key: String = path2key(path).to_str().unwrap().into();
+    if key.starts_with("-/") {
+        return StatusCode::BAD_REQUEST;
+    }
 
     let data = request
         .into_body()
@@ -87,9 +91,13 @@ async fn put_data(
 
 async fn delete_data(
     extract::Path(path): extract::Path<PathBuf>,
-    client: Extension<DBCacheClient>,
+    client: Extension<Arc<DBCacheClient>>,
 ) -> StatusCode {
     let key: String = path2key(path).to_str().unwrap().into();
+    if key.starts_with("-/") {
+        return StatusCode::BAD_REQUEST;
+    }
+
     match client.del(&key).await {
         Ok(r) => {
             if r == 0 {
@@ -110,7 +118,7 @@ struct ServerStatus {
 }
 
 async fn healthcheck(
-    client: Extension<DBCacheClient>,
+    client: Extension<Arc<DBCacheClient>>,
 ) -> Result<axum::Json<ServerStatus>, StatusCode> {
     match client.stat().await {
         Ok(s) => Ok(axum::Json(ServerStatus {
@@ -122,7 +130,7 @@ async fn healthcheck(
     }
 }
 
-async fn flushall(client: Extension<DBCacheClient>) -> StatusCode {
+async fn flushall(client: Extension<Arc<DBCacheClient>>) -> StatusCode {
     match client.flushall().await {
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -144,7 +152,7 @@ struct GetKeyResponse {
 }
 
 async fn keys(
-    client: Extension<DBCacheClient>,
+    client: Extension<Arc<DBCacheClient>>,
     extract::Json(arg): extract::Json<GetKeyArg>,
 ) -> Result<axum::Json<Vec<GetKeyResponse>>, StatusCode> {
     match client
@@ -173,7 +181,7 @@ pub struct InitializationFailedError;
 
 impl fmt::Display for InitializationFailedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid first item to double")
+        write!(f, "InitializationFailedError")
     }
 }
 impl error::Error for InitializationFailedError {

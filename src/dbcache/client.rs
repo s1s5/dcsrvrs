@@ -1,23 +1,24 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use tokio::fs::{remove_file, File};
+use std::sync::Mutex;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio::io::{self, AsyncRead, AsyncReadExt};
-use tokio::io::{copy, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
+use tracing::error;
 use uuid::Uuid;
 
 use super::errors::Error;
 use super::{ioutil, task::*};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DBCacheClient {
     blob_threshold: usize,
     size_limit: usize,
     data_root: PathBuf,
     tx: mpsc::Sender<Task>,
-    buf_list: Arc<Mutex<Vec<Vec<u8>>>>,
+    buf_list: Mutex<Vec<Vec<u8>>>,
 }
 
 impl DBCacheClient {
@@ -32,7 +33,7 @@ impl DBCacheClient {
             size_limit,
             data_root: data_root.into(),
             tx,
-            buf_list: Arc::new(Mutex::new(Vec::new())),
+            buf_list: Mutex::new(Vec::new()),
         }
     }
 
@@ -100,20 +101,37 @@ impl DBCacheClient {
         expire_time: Option<i64>,
         headers: crate::headers::Headers,
     ) -> Result<(), Error> {
-        let id: String = Uuid::new_v4().to_string();
-        let prefix = &id[..2];
-        let path = self.data_root.join(prefix).join(&id);
-        fs::create_dir_all(path.parent().unwrap()).map_err(Error::Io)?;
-        let mut writer = File::create(&path).await.map_err(Error::Io)?;
-        writer.write_all(buf).await.map_err(Error::Io)?;
+        let (abs_path, rel_path) = {
+            let id: String = Uuid::new_v4().to_string();
+            let prefix = &id[..2];
+            let rel_path = PathBuf::from(prefix).join(id);
+            (self.data_root.join(&rel_path), rel_path)
+        };
 
-        let num_wrote = copy(&mut readable, &mut writer).await.map_err(Error::Io)?;
+        let (size, delete_file_on_failed) = {
+            fs::create_dir_all(abs_path.parent().unwrap()).map_err(Error::Io)?;
+            let mut writer = File::create(&abs_path).await.map_err(Error::Io)?;
+            let delete_file_on_failed = DeleteFileOnFailed::new(&abs_path);
+            writer.write_all(buf).await.map_err(Error::Io)?;
+            // let num_wrote = copy(&mut readable, &mut writer).await.map_err(Error::Io)?;
+            let mut size = buf.len();
+            let mut buf = [0u8; 32768];
+            while size < self.size_limit {
+                let read = readable.read(&mut buf[..]).await.map_err(Error::Io)?;
+                if read == 0 {
+                    break;
+                }
+                writer.write_all(&buf[..read]).await.map_err(Error::Io)?;
+                size += read;
+            }
+            writer.flush().await.map_err(Error::Io)?;
+            drop(writer);
 
-        let size = (buf.len() as u64 + num_wrote).try_into().unwrap();
-        if size >= self.size_limit {
-            remove_file(&path).await.map_err(Error::Io)?;
-            return Err(Error::FileSizeLimitExceeded);
-        }
+            if size >= self.size_limit {
+                return Err(Error::FileSizeLimitExceeded);
+            }
+            (size, delete_file_on_failed)
+        };
 
         let res = {
             let (tx, rx) = oneshot::channel();
@@ -123,7 +141,7 @@ impl DBCacheClient {
                     key: key.into(),
                     size,
                     expire_time,
-                    filename: PathBuf::from(prefix).join(id).to_str().unwrap().into(),
+                    filename: rel_path.to_str().unwrap().into(),
                     headers,
                 }))
                 .await
@@ -133,12 +151,13 @@ impl DBCacheClient {
                 Err(e) => Err(Error::RecvError(e)),
             }
         };
+
         match res {
-            Ok(t) => Ok(t),
-            Err(e) => {
-                remove_file(&path).await.map_err(Error::Io)?;
-                Err(e)
+            Ok(t) => {
+                delete_file_on_failed.commit();
+                Ok(t)
             }
+            Err(e) => Err(e),
         }
     }
 
@@ -250,5 +269,124 @@ impl DBCacheClient {
             Ok(r) => r,
             Err(e) => Err(Error::RecvError(e)),
         }
+    }
+}
+
+struct DeleteFileOnFailed {
+    filename: PathBuf,
+    failed: bool,
+}
+
+impl DeleteFileOnFailed {
+    fn new(filename: &Path) -> Self {
+        Self {
+            filename: PathBuf::from(filename),
+            failed: true,
+        }
+    }
+    fn commit(mut self) {
+        self.failed = false;
+    }
+}
+
+impl Drop for DeleteFileOnFailed {
+    fn drop(&mut self) {
+        if self.failed {
+            match std::fs::remove_file(&self.filename) {
+                Ok(_) => {}
+                Err(err) => {
+                    error!("failed to delete file {:?}: Error={:?}", self.filename, err);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::headers::Headers;
+
+    use super::*;
+    use anyhow::{bail, Result};
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+    use tokio::io::BufReader;
+
+    #[tokio::test]
+    async fn test_set_blob() -> Result<()> {
+        let tempdir = tempfile::Builder::new()
+            .prefix("dbcache-test")
+            .tempdir()
+            .unwrap();
+
+        let (tx, rx) = mpsc::channel(1);
+        let client = DBCacheClient::new(tempdir.path(), tx, 4092, 8192);
+
+        let mut data = vec![0u8; 10];
+        let mut rng = StdRng::from_entropy();
+        rng.fill(&mut data[..]);
+
+        let handle = tokio::spawn(async move {
+            let mut rx = rx;
+            match rx.recv().await.ok_or(anyhow::anyhow!("receive none"))? {
+                Task::SetBlob(blob) => {
+                    blob.tx.send(Ok(())).unwrap();
+                    Ok(blob.blob)
+                }
+                _ => bail!("unexpected task"),
+            }
+        });
+
+        let mut stream = BufReader::new(data.as_slice());
+        client
+            .set("0", Pin::new(&mut stream), None, Headers::default())
+            .await?;
+        let data_received = handle.await??;
+        assert!(vec_equal(&data, &data_received));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_set_file() -> Result<()> {
+        let tempdir = tempfile::Builder::new()
+            .prefix("dbcache-test")
+            .tempdir()
+            .unwrap();
+
+        let (tx, rx) = mpsc::channel(1);
+        let client = DBCacheClient::new(tempdir.path(), tx, 16, 8192);
+
+        let mut data = vec![0u8; 8000];
+        let mut rng = StdRng::from_entropy();
+        rng.fill(&mut data[..]);
+
+        let data_root = PathBuf::from(tempdir.path());
+        let handle = tokio::spawn(async move {
+            let mut rx = rx;
+            match rx.recv().await.ok_or(anyhow::anyhow!("receive none"))? {
+                Task::SetFile(ft) => {
+                    let data = std::fs::read(data_root.join(ft.filename))?;
+                    ft.tx.send(Ok(())).unwrap();
+                    Ok(data)
+                }
+                _ => bail!("unexpected task"),
+            }
+        });
+
+        let mut stream = BufReader::new(data.as_slice());
+        client
+            .set("0", Pin::new(&mut stream), None, Headers::default())
+            .await?;
+        let data_received = handle.await??;
+        assert!(vec_equal(&data, &data_received));
+        Ok(())
+    }
+
+    fn vec_equal(va: &[u8], vb: &[u8]) -> bool {
+        (va.len() == vb.len()) &&  // zip stops at the shortest
+     va.iter()
+       .zip(vb)
+       .all(|(a,b)| *a == *b)
     }
 }

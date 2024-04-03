@@ -7,6 +7,7 @@ mod task;
 use log::{debug, error};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
@@ -35,7 +36,7 @@ pub async fn run_server(
     blob_threshold: usize,
     size_limit: usize,
     capacity: usize,
-) -> Result<(DBCacheClient, DBCacheDisposer), Box<dyn std::error::Error>> {
+) -> Result<(Arc<DBCacheClient>, DBCacheDisposer), Box<dyn std::error::Error>> {
     let data_root = cache_dir.join("data");
     fs::create_dir_all(&data_root)?;
 
@@ -117,7 +118,7 @@ pub async fn run_server(
     // let tx = srx.await?;
 
     Ok((
-        DBCacheClient::new(&data_root, tx.clone(), blob_threshold, size_limit),
+        Arc::new(DBCacheClient::new(&data_root, tx.clone(), blob_threshold, size_limit)),
         DBCacheDisposer { tx },
     ))
 }

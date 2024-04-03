@@ -808,6 +808,7 @@ dependencies = [
  "log",
  "migration",
  "path-clean",
+ "rand",
  "sea-orm",
  "sea-orm-migration",
  "serde",
