@@ -118,7 +118,12 @@ pub async fn run_server(
     // let tx = srx.await?;
 
     Ok((
-        Arc::new(DBCacheClient::new(&data_root, tx.clone(), blob_threshold, size_limit)),
+        Arc::new(DBCacheClient::new(
+            &data_root,
+            tx.clone(),
+            blob_threshold,
+            size_limit,
+        )),
         DBCacheDisposer { tx },
     ))
 }
@@ -126,11 +131,10 @@ pub async fn run_server(
 #[cfg(test)]
 mod tests {
 
-    use super::ioutil::ByteReader;
     use super::*;
     use std::{path::Path, pin::Pin};
     use tempfile::TempDir;
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, BufReader};
 
     struct TestFixture {
         /// Temp directory.
@@ -159,9 +163,14 @@ mod tests {
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
         let headers = crate::headers::Headers::default();
-        dbc.set(key, Pin::new(&mut ByteReader::new(value)), None, headers)
-            .await
-            .unwrap();
+        dbc.set(
+            key,
+            Pin::new(&mut BufReader::new(value.as_slice())),
+            None,
+            headers,
+        )
+        .await
+        .unwrap();
         // let r = cache::Entity::find()
         //     .filter(cache::Column::Key.eq(key))
         //     .one(&dbc.conn)
@@ -198,9 +207,14 @@ mod tests {
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
         let headers = crate::headers::Headers::default();
-        dbc.set(key, Pin::new(&mut ByteReader::new(value)), None, headers)
-            .await
-            .unwrap();
+        dbc.set(
+            key,
+            Pin::new(&mut BufReader::new(value.as_slice())),
+            None,
+            headers,
+        )
+        .await
+        .unwrap();
         // let r = cache::Entity::find()
         //     .filter(cache::Column::Key.eq(key))
         //     .one(&dbc.conn)
@@ -245,10 +259,10 @@ mod tests {
                 capacity: 128
             }
         );
-
+        let data = vec![0, 1, 2, 3];
         dbc.set(
             "blobv",
-            Pin::new(&mut ByteReader::new(vec![0, 1, 2, 3])),
+            Pin::new(&mut BufReader::new(data.as_slice())),
             None,
             crate::headers::Headers::default(),
         )
