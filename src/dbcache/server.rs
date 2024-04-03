@@ -197,10 +197,7 @@ impl DBCache {
             trace!("update: {:?}", c);
             c.update(&self.conn).await.map_err(Error::Db)?;
         }
-        debug!(
-            "after insert entries={}, bytes={}",
-            self.entries, self.size
-        );
+        debug!("after insert entries={}, bytes={}", self.entries, self.size);
         Ok(())
     }
 
@@ -597,7 +594,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        println!("{:?}", r);
+
         assert!(r.size == 4);
         assert!(r.filename.is_some() && r.filename == Some(String::from("foo")));
         assert!(r.value.is_none());
