@@ -139,7 +139,7 @@ impl<'a> InmemoryCacheInner<'a> {
         let entry = self.entries.get(key)?;
         if entry
             .expire_time
-            .filter(|f| f > &Local::now().timestamp())
+            .filter(|f| f < &Local::now().timestamp())
             .is_some()
         {
             self.entries.remove(key);
@@ -163,6 +163,7 @@ impl<'a> InmemoryCacheInner<'a> {
         if data.len() > self.bytes_per_chunk {
             bail!("key and value too large")
         }
+        self.entries.remove(key);
 
         let chunk = if self.chunks[self.target_chunk].remain() < data.len() {
             self.target_chunk = (self.target_chunk + 1) % self.chunks.len();
@@ -170,7 +171,7 @@ impl<'a> InmemoryCacheInner<'a> {
             for data in chunk.iter() {
                 self.entries.remove(data.key);
             }
-
+            chunk.pos = 0;
             chunk
         } else {
             &mut self.chunks[self.target_chunk]
@@ -276,7 +277,63 @@ mod tests {
             _ => panic!(),
         }
 
+        assert!(cache.del(&key));
+        assert!(!cache.del(&key));
+
+        assert!(cache.get(&key).is_none());
+
+        cache.set(
+            "hello",
+            "world".as_bytes(),
+            Some(Local::now().timestamp() - 1),
+            crate::headers::Headers::default(),
+        )?;
+        assert!(cache.get(&key).is_none());
+
         Ok(())
+    }
+
+    #[test]
+    fn test_cache_evict() -> Result<()> {
+        let cache = InmemoryCache::new(3, 400);
+        let datas: Vec<_> = (0..100).map(|_| (rand_key(), rand_vec(128))).collect();
+
+        for (key, value) in datas.iter().take(6) {
+            cache.set(key, value, None, Default::default())?;
+        }
+
+        for (key, value) in datas.iter().take(6) {
+            let data = cache.get(key).ok_or(anyhow!("not found"))?;
+            match data.into_inner() {
+                ioutil::DataInternal::Bytes(data) => {
+                    assert!(vec_equal(&data, value));
+                }
+                _ => panic!(),
+            }
+        }
+        {
+            let (key, value) = &datas[6];
+            cache.set(key, value, None, Default::default())?;
+        }
+        assert!(cache.get(&datas[0].0).is_none());
+        assert!(cache.get(&datas[1].0).is_none());
+        assert!(cache.get(&datas[2].0).is_some());
+
+        for (key, value) in datas.iter().skip(2).take(5) {
+            let data = cache.get(key).ok_or(anyhow!("not found"))?;
+            match data.into_inner() {
+                ioutil::DataInternal::Bytes(data) => {
+                    assert!(vec_equal(&data, value));
+                }
+                _ => panic!(),
+            }
+        }
+
+        Ok(())
+    }
+
+    fn rand_key() -> String {
+        uuid::Uuid::new_v4().to_string()
     }
 
     fn rand_vec(bytes: usize) -> Vec<u8> {

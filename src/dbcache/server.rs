@@ -113,7 +113,7 @@ impl DBCache {
             Some(v) => {
                 let now = Local::now().timestamp();
 
-                if v.expire_time.filter(|f| f > &now).is_some() {
+                if v.expire_time.filter(|f| f < &now).is_some() {
                     return Ok(None);
                 }
 
