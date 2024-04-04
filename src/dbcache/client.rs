@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::io::{self, AsyncRead, AsyncReadExt};
@@ -12,15 +12,16 @@ use uuid::Uuid;
 
 use super::errors::Error;
 use super::task::*;
+use crate::imcache::InmemoryCache;
 use crate::ioutil;
 
-#[derive(Debug)]
 pub struct DBCacheClient {
     blob_threshold: usize,
     size_limit: usize,
     data_root: PathBuf,
     tx: mpsc::Sender<Task>,
     buf_list: Mutex<Vec<Vec<u8>>>,
+    inmemory: Option<Arc<InmemoryCache>>,
 }
 
 impl DBCacheClient {
@@ -29,6 +30,7 @@ impl DBCacheClient {
         tx: mpsc::Sender<Task>,
         blob_threshold: usize,
         size_limit: usize,
+        inmemory: Option<Arc<InmemoryCache>>,
     ) -> DBCacheClient {
         DBCacheClient {
             blob_threshold,
@@ -36,6 +38,7 @@ impl DBCacheClient {
             data_root: data_root.into(),
             tx,
             buf_list: Mutex::new(Vec::new()),
+            inmemory,
         }
     }
 
@@ -57,6 +60,12 @@ impl DBCacheClient {
     }
 
     pub async fn get(&self, key: &str) -> Result<Option<ioutil::Data>, Error> {
+        if let Some(inmemory) = self.inmemory.clone() {
+            if let Some(data) = inmemory.get(key) {
+                return Ok(Some(data));
+            }
+        }
+
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Task::Get(GetTask {
@@ -321,7 +330,7 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = mpsc::channel(1);
-        let client = DBCacheClient::new(tempdir.path(), tx, 4092, 8192);
+        let client = DBCacheClient::new(tempdir.path(), tx, 4092, 8192, None);
 
         let data = rand_vec(10);
 
@@ -354,7 +363,7 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = mpsc::channel(1);
-        let client = DBCacheClient::new(tempdir.path(), tx, 16, 8192);
+        let client = DBCacheClient::new(tempdir.path(), tx, 16, 8192, None);
 
         let data = rand_vec(8000);
 

@@ -6,7 +6,10 @@ use axum::{
     Extension, Router,
 };
 use clap::Parser;
-use dcsrvrs::dbcache::{run_server, DBCacheClient};
+use dcsrvrs::{
+    dbcache::{run_server, DBCacheClient},
+    imcache::InmemoryCache,
+};
 use futures_util::TryStreamExt;
 use path_clean::PathClean;
 use serde::{Deserialize, Serialize};
@@ -23,14 +26,23 @@ struct Config {
     #[arg(long, default_value = "/tmp/dcsrvrs-data")]
     cache_dir: String,
 
-    #[arg(long, default_value_t = 1073741824)]
+    #[arg(long, default_value_t = 1u64 << 30)]
     capacity: u64,
 
-    #[arg(long, default_value_t = 134217728)]
+    #[arg(long, default_value_t = 128 << 20 )]
     file_size_limit: u64,
 
-    #[arg(long, default_value_t = 32768)]
+    #[arg(long, default_value_t = 1 << 15)]
     blob_threshold: u64,
+
+    #[arg(long, default_value_t = false)]
+    disable_inmemory_cache: bool,
+
+    #[arg(long, default_value_t = 64)]
+    inmemory_num_chunks: usize,
+
+    #[arg(long, default_value_t = 1 << 20)]
+    inmemory_bytes_per_chunk: usize,
 }
 
 fn path2key(path: PathBuf) -> PathBuf {
@@ -210,12 +222,20 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
 
     debug!("config: {:?}", config);
-
+    let inmemory_cache = if config.disable_inmemory_cache {
+        None
+    } else {
+        Some(Arc::new(InmemoryCache::new(
+            config.inmemory_num_chunks,
+            config.inmemory_bytes_per_chunk,
+        )))
+    };
     let (client, disposer) = run_server(
         &PathBuf::from(&config.cache_dir),
         config.blob_threshold.try_into().unwrap(),
         config.file_size_limit.try_into().unwrap(),
         config.capacity.try_into().unwrap(),
+        inmemory_cache,
     )
     .await
     .expect("failed to run cache server");

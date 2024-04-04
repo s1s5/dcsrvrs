@@ -14,6 +14,7 @@ pub use self::client::DBCacheClient;
 pub use self::errors::*;
 use self::server::DBCache;
 use self::task::*;
+use crate::imcache::InmemoryCache;
 use crate::ioutil;
 
 pub struct DBCacheDisposer {
@@ -36,13 +37,20 @@ pub async fn run_server(
     blob_threshold: usize,
     size_limit: usize,
     capacity: usize,
+    inmemory_cache: Option<Arc<InmemoryCache>>,
 ) -> Result<(Arc<DBCacheClient>, DBCacheDisposer), Box<dyn std::error::Error>> {
     let data_root = cache_dir.join("data");
     fs::create_dir_all(&data_root)?;
 
     let (tx, mut rx) = mpsc::channel(32);
     // let (stx, srx) = oneshot::channel();
-    let mut dbcache = DBCache::new(&cache_dir.join("db.sqlite"), &data_root, capacity).await?;
+    let mut dbcache = DBCache::new(
+        &cache_dir.join("db.sqlite"),
+        &data_root,
+        capacity,
+        inmemory_cache.clone(),
+    )
+    .await?;
 
     tokio::spawn(async move {
         // let (tx, mut rx) = mpsc::channel(32);
@@ -123,6 +131,7 @@ pub async fn run_server(
             tx.clone(),
             blob_threshold,
             size_limit,
+            inmemory_cache,
         )),
         DBCacheDisposer { tx },
     ))
@@ -160,7 +169,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_get() {
         let f = TestFixture::new();
-        let (dbc, disposer) = run_server(f.get_path(), 32, 128, 128).await.unwrap();
+        let (dbc, disposer) = run_server(f.get_path(), 32, 128, 128, None).await.unwrap();
 
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
@@ -205,7 +214,7 @@ mod tests {
     async fn test_set_get_file() {
         let f = TestFixture::new();
         // let dbc = DBCache::new(&PathBuf::from(f.get_path()), 2).await.unwrap();
-        let (dbc, disposer) = run_server(f.get_path(), 2, 128, 128).await.unwrap();
+        let (dbc, disposer) = run_server(f.get_path(), 2, 128, 128, None).await.unwrap();
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
         let headers = HashMap::new();
@@ -251,7 +260,7 @@ mod tests {
     async fn test_api() -> anyhow::Result<()> {
         let f = TestFixture::new();
 
-        let (dbc, disposer) = run_server(f.get_path(), 4, 32, 128).await.unwrap();
+        let (dbc, disposer) = run_server(f.get_path(), 4, 32, 128, None).await.unwrap();
 
         let stat = dbc.stat().await?;
         assert!(

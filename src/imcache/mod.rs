@@ -179,10 +179,10 @@ impl<'a> InmemoryCacheInner<'a> {
         key: &'b str,
         value: &'b [u8],
         expire_time: Option<i64>,
-        headers: crate::headers::Headers,
+        headers: HashMap<String, String>,
     ) -> Result<()> {
         let entry = Entry {
-            headers: headers.0,
+            headers,
             expire_time,
             value: value.to_vec(),
         };
@@ -242,7 +242,7 @@ impl InmemoryCache {
         key: &str,
         value: &[u8],
         expire_time: Option<i64>,
-        headers: crate::headers::Headers,
+        headers: HashMap<String, String>,
     ) -> Result<()> {
         (**(self.inner.lock().unwrap())).set(key, value, expire_time, headers)
     }
@@ -281,12 +281,7 @@ mod tests {
     fn test_cache() -> Result<()> {
         let cache = InmemoryCache::new(1, 1024);
 
-        cache.set(
-            "hello",
-            "world".as_bytes(),
-            None,
-            crate::headers::Headers::default(),
-        )?;
+        cache.set("hello", "world".as_bytes(), None, HashMap::new())?;
 
         let key = String::from("hello");
         let data = cache.get(&key).ok_or(anyhow!("not found"))?;
@@ -307,7 +302,7 @@ mod tests {
             "hello",
             "world".as_bytes(),
             Some(Local::now().timestamp() - 1),
-            crate::headers::Headers::default(),
+            HashMap::new(),
         )?;
         assert!(cache.get(&key).is_none());
 

@@ -1,5 +1,6 @@
 use super::errors::{DbFieldError, Error};
 use super::ioutil;
+use crate::imcache::InmemoryCache;
 use chrono::{DateTime, Local, Utc};
 use entity::cache;
 use log::error;
@@ -13,6 +14,7 @@ use sea_orm::{DbConn, QueryOrder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{debug, trace};
 
 #[derive(FromQueryResult)]
@@ -43,6 +45,7 @@ pub struct DBCache {
     evict_threshold: f64,
     evicted_at: std::time::Instant,
     evicted_size: usize,
+    inmemory: Option<Arc<InmemoryCache>>,
 }
 
 impl DBCache {
@@ -50,9 +53,14 @@ impl DBCache {
         db_path: &Path,
         data_root: &Path,
         capacity: usize,
-    ) -> Result<DBCache, Box<dyn std::error::Error>> {
+        inmemory: Option<Arc<InmemoryCache>>,
+    ) -> Result<DBCache, Error> {
         let connection_options = SqliteConnectOptions::new()
-            .filename(db_path.to_str().unwrap())
+            .filename(
+                db_path
+                    .to_str()
+                    .ok_or(Error::Other(format!("db_path:'{db_path:?}' ValueError")))?,
+            )
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal);
@@ -60,7 +68,8 @@ impl DBCache {
         let sqlite_pool = SqlitePoolOptions::new()
             .max_connections(10)
             .connect_with(connection_options)
-            .await?;
+            .await
+            .map_err(|err| Error::Other(format!("connection failed {err:?}")))?;
 
         let conn = SqlxSqliteConnector::from_sqlx_sqlite_pool(sqlite_pool);
         Migrator::up(&conn, None)
@@ -73,7 +82,7 @@ impl DBCache {
             .column(cache::Column::Size)
             .into_model::<LimitedCacheRow>()
             .paginate(&conn, 1000);
-        while let Some(el) = pages.fetch_and_next().await? {
+        while let Some(el) = pages.fetch_and_next().await.map_err(Error::Db)? {
             for e in el {
                 entries += 1;
                 size += e.size;
@@ -90,6 +99,7 @@ impl DBCache {
             evict_threshold: 0.8,
             evicted_at: std::time::Instant::now(),
             evicted_size: size as usize,
+            inmemory,
         })
     }
 
@@ -125,19 +135,23 @@ impl DBCache {
                     av.update(&self.conn).await.map_err(Error::Db)?;
                 }
 
-                if v.value.is_some() {
-                    Ok(Some(ioutil::Data::new_from_buf(
-                        v.value.unwrap(),
-                        bincode::deserialize(&v.attr.unwrap_or(Vec::new())).unwrap(),
-                    )))
-                } else if v.filename.is_some() {
-                    tokio::fs::File::open(self.data_root.join(v.filename.unwrap()))
+                let headers: HashMap<String, String> =
+                    bincode::deserialize(&v.attr.unwrap_or(Vec::new()))
+                        .map_err(|err| Error::Other(format!("deserialize error {err:?}")))?;
+                if let Some(value) = v.value {
+                    if let Some(inmemory) = self.inmemory.clone() {
+                        let _ = inmemory.set(&key, &value, v.expire_time, headers.clone());
+                    }
+
+                    Ok(Some(ioutil::Data::new_from_buf(value, headers)))
+                } else if let Some(filename) = v.filename {
+                    tokio::fs::File::open(self.data_root.join(filename))
                         .await
                         .map(|f| {
                             Some(ioutil::Data::new_from_file(
                                 f,
                                 v.size.try_into().unwrap(),
-                                bincode::deserialize(&v.attr.unwrap_or(Vec::new())).unwrap(),
+                                headers,
                             ))
                         })
                         .map_err(Error::Io)
@@ -207,6 +221,10 @@ impl DBCache {
         expire_time: Option<i64>,
         headers: HashMap<String, String>,
     ) -> Result<(), Error> {
+        if let Some(inmemory) = self.inmemory.clone() {
+            let _ = inmemory.set(&key, &blob, expire_time, headers.clone());
+        }
+
         self.set_internal(
             key,
             blob.len().try_into().unwrap(),
@@ -235,6 +253,10 @@ impl DBCache {
     }
 
     pub async fn del(&mut self, key: &str) -> Result<u64, Error> {
+        if let Some(inmemory) = self.inmemory.clone() {
+            let _ = inmemory.del(key);
+        }
+
         let c = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
             .one(&self.conn)
@@ -490,6 +512,7 @@ mod tests {
                     &tempdir.path().join("db.sqlite"),
                     &tempdir.path().join("data"),
                     capacity,
+                    None,
                 )
                 .await
                 .unwrap(),
