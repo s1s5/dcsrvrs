@@ -1,6 +1,5 @@
 mod client;
 mod errors;
-pub mod ioutil;
 mod server;
 mod task;
 
@@ -15,6 +14,7 @@ pub use self::client::DBCacheClient;
 pub use self::errors::*;
 use self::server::DBCache;
 use self::task::*;
+use crate::ioutil;
 
 pub struct DBCacheDisposer {
     tx: mpsc::Sender<Task>,
@@ -136,6 +136,8 @@ mod tests {
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, BufReader};
 
+    use crate::ioutil;
+
     struct TestFixture {
         /// Temp directory.
         pub tempdir: TempDir,
@@ -183,7 +185,7 @@ mod tests {
         // assert!(r.value.unwrap().len() == 4);
 
         let r = dbc.get(key).await.unwrap().unwrap();
-        match r.data {
+        match r.into_inner() {
             ioutil::DataInternal::Bytes(b) => {
                 assert!(b.len() == 4);
                 assert!(b[..4] == [0, 1, 2, 3]);
@@ -227,7 +229,7 @@ mod tests {
         // assert!(r.value == None);
 
         let r = dbc.get(key).await.unwrap().unwrap();
-        match r.data {
+        match r.into_inner() {
             ioutil::DataInternal::Bytes(_) => {
                 panic!();
             }

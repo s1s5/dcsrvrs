@@ -125,21 +125,19 @@ impl DBCache {
                 }
 
                 if v.value.is_some() {
-                    Ok(Some(ioutil::Data {
-                        headers: bincode::deserialize(&v.attr.unwrap_or(Vec::new())).unwrap(),
-                        size: v.size.try_into().unwrap(),
-                        data: ioutil::DataInternal::Bytes(v.value.unwrap()),
-                    }))
+                    Ok(Some(ioutil::Data::new_from_buf(
+                        v.value.unwrap(),
+                        bincode::deserialize(&v.attr.unwrap_or(Vec::new())).unwrap(),
+                    )))
                 } else if v.filename.is_some() {
                     tokio::fs::File::open(self.data_root.join(v.filename.unwrap()))
                         .await
                         .map(|f| {
-                            Some(ioutil::Data {
-                                headers: bincode::deserialize(&v.attr.unwrap_or(Vec::new()))
-                                    .unwrap(),
-                                size: v.size.try_into().unwrap(),
-                                data: ioutil::DataInternal::File(f),
-                            })
+                            Some(ioutil::Data::new_from_file(
+                                f,
+                                v.size.try_into().unwrap(),
+                                bincode::deserialize(&v.attr.unwrap_or(Vec::new())).unwrap(),
+                            ))
                         })
                         .map_err(Error::Io)
                 } else {
@@ -532,7 +530,7 @@ mod tests {
 
         // dbcache経由での値の取得
         let r = f.cache.get(key).await.unwrap().unwrap();
-        match r.data {
+        match r.into_inner() {
             ioutil::DataInternal::Bytes(b) => {
                 assert!(b.len() == 4);
                 assert!(b[..4] == [0, 1, 2, 3]);
@@ -601,7 +599,7 @@ mod tests {
 
         // dbcache経由での値の取得
         let r = f.cache.get(key).await.unwrap().unwrap();
-        match r.data {
+        match r.into_inner() {
             ioutil::DataInternal::Bytes(_) => {
                 panic!();
             }

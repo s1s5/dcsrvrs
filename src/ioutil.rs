@@ -1,8 +1,34 @@
 pub struct Data {
-    pub headers: crate::headers::Headers,
-    pub size: usize,
-    pub data: DataInternal,
+    headers: crate::headers::Headers,
+    size: usize,
+    data: DataInternal,
 }
+
+impl Data {
+    pub fn new_from_buf(data: Vec<u8>, headers: crate::headers::Headers) -> Self {
+        Self {
+            headers,
+            size: data.len(),
+            data: DataInternal::Bytes(data),
+        }
+    }
+    pub fn new_from_file(
+        file: tokio::fs::File,
+        size: usize,
+        headers: crate::headers::Headers,
+    ) -> Self {
+        Self {
+            headers,
+            size,
+            data: DataInternal::File(file),
+        }
+    }
+
+    pub fn into_inner(self) -> DataInternal {
+        self.data
+    }
+}
+
 pub enum DataInternal {
     Bytes(Vec<u8>),
     File(tokio::fs::File),

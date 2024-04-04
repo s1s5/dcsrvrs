@@ -10,7 +10,8 @@ use tracing::error;
 use uuid::Uuid;
 
 use super::errors::Error;
-use super::{ioutil, task::*};
+use super::task::*;
+use crate::ioutil;
 
 #[derive(Debug)]
 pub struct DBCacheClient {

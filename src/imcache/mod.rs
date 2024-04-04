@@ -1,5 +1,10 @@
+use std::pin::Pin;
+use std::{collections::HashMap, sync::Mutex};
+
 use anyhow::{bail, Result};
-use std::collections::HashMap;
+use chrono::Local;
+
+use crate::ioutil;
 
 struct Data<'a> {
     key: &'a str,
@@ -105,15 +110,21 @@ impl<'a> Iterator for ChunkIter<'a> {
     }
 }
 
-pub struct InmemoryCache<'a> {
+struct Entry<'a> {
+    expire_time: Option<i64>,
+    headers: crate::headers::Headers,
+    value: &'a [u8],
+}
+
+struct InmemoryCacheInner<'a> {
     bytes_per_chunk: usize,
     target_chunk: usize,
-    entries: HashMap<&'a str, &'a [u8]>,
+    entries: HashMap<&'a str, Entry<'a>>,
     chunks: Vec<Chunk>,
 }
 
-impl<'a> InmemoryCache<'a> {
-    pub fn new(num_chunks: usize, bytes_per_chunk: usize) -> Self {
+impl<'a> InmemoryCacheInner<'a> {
+    fn new(num_chunks: usize, bytes_per_chunk: usize) -> Self {
         Self {
             bytes_per_chunk,
             target_chunk: 0,
@@ -124,12 +135,29 @@ impl<'a> InmemoryCache<'a> {
         }
     }
 
-    pub fn get(&self, key: &str) -> Option<Vec<u8>> {
+    fn get(&mut self, key: &str) -> Option<ioutil::Data> {
         let entry = self.entries.get(key)?;
-        Some(entry.to_vec())
+        if entry
+            .expire_time
+            .filter(|f| f > &Local::now().timestamp())
+            .is_some()
+        {
+            self.entries.remove(key);
+            return None;
+        }
+        Some(ioutil::Data::new_from_buf(
+            entry.value.to_vec(),
+            entry.headers.clone(),
+        ))
     }
 
-    pub fn set<'b>(&mut self, key: &'b str, value: &'b [u8]) -> Result<()> {
+    fn set<'b>(
+        &mut self,
+        key: &'b str,
+        value: &'b [u8],
+        expire_time: Option<i64>,
+        headers: crate::headers::Headers,
+    ) -> Result<()> {
         let data = Data::new(key, value)?;
 
         if data.len() > self.bytes_per_chunk {
@@ -151,20 +179,59 @@ impl<'a> InmemoryCache<'a> {
         unsafe {
             // unsafeにせざるを得ない...
             let wrote = std::mem::transmute::<Data<'_>, Data<'a>>(chunk.push(data));
-            self.entries.insert(wrote.key, wrote.value);
+            self.entries.insert(
+                wrote.key,
+                Entry {
+                    expire_time,
+                    headers,
+                    value: wrote.value,
+                },
+            );
         }
 
         Ok(())
     }
 
-    pub fn del(&mut self, key: &str) -> bool {
+    fn del(&mut self, key: &str) -> bool {
         self.entries.remove(key).is_some()
+    }
+}
+
+pub struct InmemoryCache {
+    inner: Mutex<Pin<Box<InmemoryCacheInner<'static>>>>,
+}
+
+impl InmemoryCache {
+    pub fn new(num_chunks: usize, bytes_per_chunk: usize) -> Self {
+        Self {
+            inner: Mutex::new(Pin::new(Box::new(InmemoryCacheInner::new(
+                num_chunks,
+                bytes_per_chunk,
+            )))),
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<ioutil::Data> {
+        self.inner.lock().unwrap().get(key)
+    }
+
+    pub fn set(
+        &self,
+        key: &str,
+        value: &[u8],
+        expire_time: Option<i64>,
+        headers: crate::headers::Headers,
+    ) -> Result<()> {
+        (**(self.inner.lock().unwrap())).set(key, value, expire_time, headers)
+    }
+
+    pub fn del(&self, key: &str) -> bool {
+        self.inner.lock().unwrap().del(key)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::pin::Pin;
 
     use super::*;
     use anyhow::{anyhow, Result};
@@ -190,14 +257,24 @@ mod tests {
 
     #[test]
     fn test_cache() -> Result<()> {
-        let mut cache = Pin::new(Box::new(InmemoryCache::new(1, 1024)));
+        let cache = InmemoryCache::new(1, 1024);
 
-        (*cache).set("hello", "world".as_bytes())?;
+        cache.set(
+            "hello",
+            "world".as_bytes(),
+            None,
+            crate::headers::Headers::default(),
+        )?;
 
         let key = String::from("hello");
-        let data = (*cache).get(&key).ok_or(anyhow!("not found"))?;
+        let data = cache.get(&key).ok_or(anyhow!("not found"))?;
 
-        assert!(vec_equal(&data, "world".as_bytes()));
+        match data.into_inner() {
+            ioutil::DataInternal::Bytes(data) => {
+                assert!(vec_equal(&data, "world".as_bytes()));
+            }
+            _ => panic!(),
+        }
 
         Ok(())
     }
