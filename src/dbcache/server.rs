@@ -140,7 +140,7 @@ impl DBCache {
                         .map_err(|err| Error::Other(format!("deserialize error {err:?}")))?;
                 if let Some(value) = v.value {
                     if let Some(inmemory) = self.inmemory.clone() {
-                        let _ = inmemory.set(&key, &value, v.expire_time, headers.clone());
+                        let _ = inmemory.set(key, &value, v.expire_time, headers.clone());
                     }
 
                     Ok(Some(ioutil::Data::new_from_buf(value, headers)))
