@@ -39,6 +39,7 @@ uuid = { version = "^1", features = ["v4", "fast-rng"] }
 sea-orm = { version = "0.11.3", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
 sea-orm-migration = { version = "0.11.3", features = ["runtime-tokio-rustls", "sqlx-sqlite"] }
 rand = "0.8.5"
+rkyv = { version = "0.7.44", features = ["bytecheck", "validation"] }
 
 [workspace.dependencies]
 sea-orm = { version = "0.11.3", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }

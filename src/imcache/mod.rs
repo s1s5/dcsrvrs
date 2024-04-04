@@ -3,9 +3,14 @@ use std::{collections::HashMap, sync::Mutex};
 
 use anyhow::{bail, Result};
 use chrono::Local;
+use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::ioutil;
 
+#[inline(always)]
+fn round_up(x: usize) -> usize {
+    (x + 7) & (!7)
+}
 struct Data<'a> {
     key: &'a str,
     value: &'a [u8],
@@ -21,7 +26,7 @@ impl<'a> Data<'a> {
     }
 
     fn len(&self) -> usize {
-        4 + self.key.len() + self.value.len()
+        round_up(4 + self.key.len()) + self.value.len()
     }
 
     fn write(&self, buffer: &mut [u8]) -> usize {
@@ -31,6 +36,8 @@ impl<'a> Data<'a> {
         buffer[s..e].copy_from_slice(&u32::to_le_bytes(self.pack_size()));
         let (s, e) = (e, e + self.key.len());
         buffer[s..e].copy_from_slice(self.key.as_bytes());
+        let e = round_up(e);
+
         let (s, e) = (e, e + self.value.len());
         buffer[s..e].copy_from_slice(self.value);
 
@@ -39,9 +46,10 @@ impl<'a> Data<'a> {
 
     fn read(buffer: &'a [u8]) -> Self {
         let (str_size, data_size) = Self::unpack_size(buffer[0..4].try_into().unwrap());
+        let offset = round_up(4 + str_size);
         Self {
             key: std::str::from_utf8(&buffer[4..4 + str_size]).unwrap(),
-            value: &buffer[4 + str_size..4 + str_size + data_size],
+            value: &buffer[offset..offset + data_size],
         }
     }
 
@@ -76,6 +84,7 @@ impl Chunk {
 
         let wrote = data.write(&mut self.data[self.pos..]);
         let data = Data::read(&self.data[self.pos..]);
+
         self.pos += wrote;
 
         data
@@ -110,16 +119,19 @@ impl<'a> Iterator for ChunkIter<'a> {
     }
 }
 
-struct Entry<'a> {
+#[derive(Archive, Deserialize, Serialize, Debug, PartialEq)]
+#[archive(check_bytes)]
+#[archive_attr(derive(Debug))]
+struct Entry {
     expire_time: Option<i64>,
-    headers: crate::headers::Headers,
-    value: &'a [u8],
+    headers: HashMap<String, String>,
+    value: Vec<u8>,
 }
 
 struct InmemoryCacheInner<'a> {
     bytes_per_chunk: usize,
     target_chunk: usize,
-    entries: HashMap<&'a str, Entry<'a>>,
+    entries: HashMap<&'a str, &'a [u8]>,
     chunks: Vec<Chunk>,
 }
 
@@ -137,17 +149,21 @@ impl<'a> InmemoryCacheInner<'a> {
 
     fn get(&mut self, key: &str) -> Option<ioutil::Data> {
         let entry = self.entries.get(key)?;
+        let entry = rkyv::check_archived_root::<Entry>(entry).ok()?;
+        let entry: Entry = entry.deserialize(&mut rkyv::Infallible).unwrap();
+
         if entry
             .expire_time
-            .filter(|f| f < &Local::now().timestamp())
+            .filter(|x| x < &Local::now().timestamp())
             .is_some()
         {
             self.entries.remove(key);
             return None;
         }
+
         Some(ioutil::Data::new_from_buf(
             entry.value.to_vec(),
-            entry.headers.clone(),
+            crate::headers::Headers(entry.headers.clone()),
         ))
     }
 
@@ -158,7 +174,14 @@ impl<'a> InmemoryCacheInner<'a> {
         expire_time: Option<i64>,
         headers: crate::headers::Headers,
     ) -> Result<()> {
-        let data = Data::new(key, value)?;
+        let entry = Entry {
+            headers: headers.0,
+            expire_time,
+            value: value.to_vec(),
+        };
+        let value = rkyv::to_bytes::<_, 256>(&entry).unwrap();
+
+        let data = Data::new(key, &value)?;
 
         if data.len() > self.bytes_per_chunk {
             bail!("key and value too large")
@@ -180,14 +203,7 @@ impl<'a> InmemoryCacheInner<'a> {
         unsafe {
             // unsafeにせざるを得ない...
             let wrote = std::mem::transmute::<Data<'_>, Data<'a>>(chunk.push(data));
-            self.entries.insert(
-                wrote.key,
-                Entry {
-                    expire_time,
-                    headers,
-                    value: wrote.value,
-                },
-            );
+            self.entries.insert(wrote.key, wrote.value);
         }
 
         Ok(())
@@ -236,7 +252,7 @@ mod tests {
 
     use super::*;
     use anyhow::{anyhow, Result};
-    use rand::{rngs::StdRng, Rng as _, SeedableRng as _};
+    use rand::{distributions::Alphanumeric, rngs::StdRng, Rng as _, SeedableRng as _};
 
     #[test]
     fn test_data() -> Result<()> {
@@ -247,7 +263,7 @@ mod tests {
         let mut bytes = [0u8; 128];
         let wrote = data.write(&mut bytes[..]);
 
-        assert_eq!(wrote, 4 + 8 + 5);
+        assert_eq!(wrote, 4 + 8 + 4 + 5);
 
         let archived = Data::read(&bytes[..]);
         assert_eq!(archived.key, key);
@@ -294,9 +310,49 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_long_key() -> Result<()> {
+        let cache = InmemoryCache::new(2, 32768);
+        for i in 0..1024 {
+            let key = rand_key(i);
+            let value = rand_vec(i);
+            cache.set(&key, &value, None, Default::default())?;
+            let data = cache.get(&key).ok_or(anyhow!("not found"))?;
+            match data.into_inner() {
+                ioutil::DataInternal::Bytes(data) => {
+                    assert!(vec_equal(&value, &data))
+                }
+                _ => {
+                    panic!("unexpected")
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_cache_long_value() -> Result<()> {
+        let cache = InmemoryCache::new(2, 1 << 20);
+        for i in (0..(1 << 15)).step_by(512) {
+            let key = rand_key(i & 511);
+            let value = rand_vec(i);
+            cache.set(&key, &value, None, Default::default())?;
+            let data = cache.get(&key).ok_or(anyhow!("not found"))?;
+            match data.into_inner() {
+                ioutil::DataInternal::Bytes(data) => {
+                    assert!(vec_equal(&value, &data))
+                }
+                _ => {
+                    panic!("unexpected")
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_cache_evict() -> Result<()> {
-        let cache = InmemoryCache::new(3, 400);
-        let datas: Vec<_> = (0..100).map(|_| (rand_key(), rand_vec(128))).collect();
+        let cache = InmemoryCache::new(3, 500);
+        let datas: Vec<_> = (0..100).map(|_| (rand_key(16), rand_vec(128))).collect();
 
         for (key, value) in datas.iter().take(6) {
             cache.set(key, value, None, Default::default())?;
@@ -332,8 +388,12 @@ mod tests {
         Ok(())
     }
 
-    fn rand_key() -> String {
-        uuid::Uuid::new_v4().to_string()
+    fn rand_key(bytes: usize) -> String {
+        rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(bytes)
+            .map(char::from)
+            .collect()
     }
 
     fn rand_vec(bytes: usize) -> Vec<u8> {

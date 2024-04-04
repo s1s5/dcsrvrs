@@ -809,6 +809,7 @@ dependencies = [
  "migration",
  "path-clean",
  "rand",
+ "rkyv",
  "sea-orm",
  "sea-orm-migration",
  "serde",
