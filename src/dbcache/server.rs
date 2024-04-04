@@ -39,10 +39,10 @@ pub struct DBCache {
     entries: usize,
     size: usize,
     capacity: usize,
-    truncate_interval: f64,
-    truncate_threshold: f64,
-    truncated_at: std::time::Instant,
-    truncated_size: usize,
+    evict_interval: f64,
+    evict_threshold: f64,
+    evicted_at: std::time::Instant,
+    evicted_size: usize,
 }
 
 impl DBCache {
@@ -86,10 +86,10 @@ impl DBCache {
             entries,
             size: size as usize,
             capacity,
-            truncate_interval: 60.0,
-            truncate_threshold: 0.8,
-            truncated_at: std::time::Instant::now(),
-            truncated_size: size as usize,
+            evict_interval: 60.0,
+            evict_threshold: 0.8,
+            evicted_at: std::time::Instant::now(),
+            evicted_size: size as usize,
         })
     }
 
@@ -216,7 +216,7 @@ impl DBCache {
             headers,
         )
         .await?;
-        self.truncate().await?;
+        self.evict().await?;
         Ok(())
     }
 
@@ -230,7 +230,7 @@ impl DBCache {
     ) -> Result<(), Error> {
         self.set_internal(key, size, None, Some(filename), expire_time, headers)
             .await?;
-        self.truncate().await?;
+        self.evict().await?;
         Ok(())
     }
 
@@ -258,7 +258,7 @@ impl DBCache {
         })
     }
 
-    async fn truncate_rows_extract_keys(
+    async fn evict_rows_extract_keys(
         &self,
         mut pages: Paginator<'_, DatabaseConnection, SelectModel<LimitedCacheRowWithFilename>>,
         delete_all: bool,
@@ -284,7 +284,7 @@ impl DBCache {
         Ok((keys, deleted_files, deleted_size))
     }
 
-    async fn truncate_rows_truncate(
+    async fn evict_rows_delete(
         &mut self,
         keys: Vec<String>,
         deleted_files: Vec<String>,
@@ -314,10 +314,10 @@ impl DBCache {
         Ok((res.rows_affected.try_into().unwrap(), deleted_size))
     }
 
-    async fn truncate_expired(&mut self) -> Result<(usize, usize), Error> {
+    async fn evict_expired(&mut self) -> Result<(usize, usize), Error> {
         let now = Local::now().timestamp();
         let (keys, files, size) = self
-            .truncate_rows_extract_keys(
+            .evict_rows_extract_keys(
                 cache::Entity::find()
                     .filter(cache::Column::ExpireTime.is_not_null())
                     .filter(cache::Column::ExpireTime.lt(now))
@@ -331,12 +331,12 @@ impl DBCache {
                 self.capacity,
             )
             .await?;
-        self.truncate_rows_truncate(keys, files, size).await
+        self.evict_rows_delete(keys, files, size).await
     }
 
-    async fn truncate_old(&mut self, goal_size: usize) -> Result<(usize, usize), Error> {
+    async fn evict_old(&mut self, goal_size: usize) -> Result<(usize, usize), Error> {
         let (keys, files, size) = self
-            .truncate_rows_extract_keys(
+            .evict_rows_extract_keys(
                 cache::Entity::find()
                     .order_by_asc(cache::Column::AccessTime)
                     .select_only()
@@ -349,25 +349,21 @@ impl DBCache {
                 goal_size,
             )
             .await?;
-        self.truncate_rows_truncate(keys, files, size).await
+        self.evict_rows_delete(keys, files, size).await
     }
 
-    async fn truncate(&mut self) -> Result<(usize, usize), Error> {
-        trace!(
-            "before truncate entires={}, bytes={}",
-            self.entries,
-            self.size
-        );
-        let (expired_entries, expired_size) = if (self.truncated_at
-            + std::time::Duration::from_secs_f64(self.truncate_interval))
+    async fn evict(&mut self) -> Result<(usize, usize), Error> {
+        trace!("before evict entires={}, bytes={}", self.entries, self.size);
+        let (expired_entries, expired_size) = if (self.evicted_at
+            + std::time::Duration::from_secs_f64(self.evict_interval))
             < std::time::Instant::now()
         {
-            self.truncate_expired().await?
+            self.evict_expired().await?
         } else {
             (0, 0)
         };
         trace!(
-            "after truncate_expired entires={}, bytes={}, expired.entries={expired_entries}, expired.bytes={expired_size}",
+            "after evict entires={}, bytes={}, expired.entries={expired_entries}, expired.bytes={expired_size}",
             self.entries,
             self.size,
         );
@@ -375,12 +371,12 @@ impl DBCache {
         let (old_deleted_entries, old_deleted_size) = if self.size < self.capacity {
             (0, 0)
         } else {
-            self.truncated_size = self.size;
-            let goal_size = (self.truncate_threshold * (self.capacity as f64)) as usize;
-            self.truncate_old(goal_size).await?
+            self.evicted_size = self.size;
+            let goal_size = (self.evict_threshold * (self.capacity as f64)) as usize;
+            self.evict_old(goal_size).await?
         };
         trace!(
-            "after truncate_old entires={}, bytes={}, old.entries={old_deleted_entries}, old.bytes={old_deleted_size}",
+            "after evict_old entires={}, bytes={}, old.entries={old_deleted_entries}, old.bytes={old_deleted_size}",
             self.entries,
             self.size
         );
@@ -400,7 +396,7 @@ impl DBCache {
             }
 
             let (keys, files, size) = self
-                .truncate_rows_extract_keys(
+                .evict_rows_extract_keys(
                     cache::Entity::find()
                         .order_by(cache::Column::AccessTime, Order::Asc)
                         .limit(10000)
@@ -414,7 +410,7 @@ impl DBCache {
                     0,
                 )
                 .await?;
-            let (e, s) = self.truncate_rows_truncate(keys, files, size).await?;
+            let (e, s) = self.evict_rows_delete(keys, files, size).await?;
             deleted_entries += e;
             deleted_size += s;
         }
@@ -626,7 +622,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_truncate_old() -> anyhow::Result<()> {
+    async fn test_evict_old() -> anyhow::Result<()> {
         let mut f = TestFixture::new((13.0 / 0.8f64).ceil() as usize).await;
         let value = vec![0, 1, 2, 3, 4, 5];
         let headers = HashMap::new();

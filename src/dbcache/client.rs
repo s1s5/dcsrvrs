@@ -306,7 +306,6 @@ impl Drop for DeleteFileOnFailed {
 
 #[cfg(test)]
 mod tests {
-    use crate::headers::Headers;
 
     use super::*;
     use anyhow::{bail, Result};
