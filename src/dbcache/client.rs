@@ -322,9 +322,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         let client = DBCacheClient::new(tempdir.path(), tx, 4092, 8192);
 
-        let mut data = vec![0u8; 10];
-        let mut rng = StdRng::from_entropy();
-        rng.fill(&mut data[..]);
+        let data = rand_vec(10);
 
         let handle = tokio::spawn(async move {
             let mut rx = rx;
@@ -357,9 +355,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         let client = DBCacheClient::new(tempdir.path(), tx, 16, 8192);
 
-        let mut data = vec![0u8; 8000];
-        let mut rng = StdRng::from_entropy();
-        rng.fill(&mut data[..]);
+        let data = rand_vec(8000);
 
         let data_root = PathBuf::from(tempdir.path());
         let handle = tokio::spawn(async move {
@@ -381,6 +377,13 @@ mod tests {
         let data_received = handle.await??;
         assert!(vec_equal(&data, &data_received));
         Ok(())
+    }
+
+    fn rand_vec(bytes: usize) -> Vec<u8> {
+        let mut data = vec![0u8; bytes];
+        let mut rng = StdRng::from_entropy();
+        rng.fill(&mut data[..]);
+        data
     }
 
     fn vec_equal(va: &[u8], vb: &[u8]) -> bool {
