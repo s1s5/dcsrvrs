@@ -11,6 +11,7 @@ use sea_orm::{
 };
 use sea_orm::{DbConn, QueryOrder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{debug, trace};
 
@@ -154,7 +155,7 @@ impl DBCache {
         blob: Option<Vec<u8>>,
         filename: Option<String>,
         expire_time: Option<i64>,
-        headers: crate::headers::Headers,
+        headers: HashMap<String, String>,
     ) -> Result<(), Error> {
         let old_size = match cache::Entity::find()
             .select_only()
@@ -204,7 +205,7 @@ impl DBCache {
         key: String,
         blob: Vec<u8>,
         expire_time: Option<i64>,
-        headers: crate::headers::Headers,
+        headers: HashMap<String, String>,
     ) -> Result<(), Error> {
         self.set_internal(
             key,
@@ -225,7 +226,7 @@ impl DBCache {
         size: i64,
         filename: String,
         expire_time: Option<i64>,
-        headers: crate::headers::Headers,
+        headers: HashMap<String, String>,
     ) -> Result<(), Error> {
         self.set_internal(key, size, None, Some(filename), expire_time, headers)
             .await?;
@@ -507,7 +508,7 @@ mod tests {
 
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
-        let headers = crate::headers::Headers::default();
+        let headers = HashMap::new();
         f.cache
             .set_blob(key.into(), value, None, headers)
             .await
@@ -565,7 +566,7 @@ mod tests {
             let mut writer = File::create(&abs_path).await.unwrap();
             writer.write_all(&[0, 1, 2, 3]).await.unwrap();
         }
-        let headers = crate::headers::Headers::default();
+        let headers = HashMap::new();
         f.cache
             .set_file(
                 key.into(),
@@ -628,7 +629,7 @@ mod tests {
     async fn test_truncate_old() -> anyhow::Result<()> {
         let mut f = TestFixture::new((13.0 / 0.8f64).ceil() as usize).await;
         let value = vec![0, 1, 2, 3, 4, 5];
-        let headers = crate::headers::Headers::default();
+        let headers = HashMap::new();
         f.cache
             .set_blob("A".into(), value.clone(), None, headers.clone())
             .await?;
@@ -671,7 +672,7 @@ mod tests {
     async fn test_flushall() -> anyhow::Result<()> {
         let mut f = TestFixture::new((13.0 / 0.8f64).ceil() as usize).await;
         let value = vec![0, 1, 2, 3, 4, 5];
-        let headers = crate::headers::Headers::default();
+        let headers = HashMap::new();
         f.cache
             .set_blob("A".into(), value.clone(), None, headers.clone())
             .await?;
@@ -703,7 +704,7 @@ mod tests {
     async fn test_keys() -> anyhow::Result<()> {
         let mut f = TestFixture::new(128).await;
         let value = vec![0, 1, 2, 3, 4, 5];
-        let headers = crate::headers::Headers::default();
+        let headers = HashMap::new();
         f.cache
             .set_blob("A".into(), value.clone(), None, headers.clone())
             .await?;

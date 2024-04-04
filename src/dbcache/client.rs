@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -75,7 +76,7 @@ impl DBCacheClient {
         key: &str,
         buf: &[u8],
         expire_time: Option<i64>,
-        headers: crate::headers::Headers,
+        headers: HashMap<String, String>,
     ) -> Result<(), Error> {
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -100,7 +101,7 @@ impl DBCacheClient {
         buf: &[u8],
         mut readable: Pin<&mut T>,
         expire_time: Option<i64>,
-        headers: crate::headers::Headers,
+        headers: HashMap<String, String>,
     ) -> Result<(), Error> {
         let (abs_path, rel_path) = {
             let id: String = Uuid::new_v4().to_string();
@@ -183,7 +184,7 @@ impl DBCacheClient {
         key: &str,
         mut readable: Pin<&mut T>,
         expire_time: Option<i64>,
-        headers: crate::headers::Headers,
+        headers: HashMap<String, String>,
     ) -> Result<(), Error> {
         let (buf, buf_size) = {
             let mut buf = self.get_buf().await;
@@ -338,7 +339,7 @@ mod tests {
 
         let mut stream = BufReader::new(data.as_slice());
         client
-            .set("0", Pin::new(&mut stream), None, Headers::default())
+            .set("0", Pin::new(&mut stream), None, HashMap::new())
             .await?;
         let data_received = handle.await??;
         assert!(vec_equal(&data, &data_received));
@@ -373,7 +374,7 @@ mod tests {
 
         let mut stream = BufReader::new(data.as_slice());
         client
-            .set("0", Pin::new(&mut stream), None, Headers::default())
+            .set("0", Pin::new(&mut stream), None, HashMap::new())
             .await?;
         let data_received = handle.await??;
         assert!(vec_equal(&data, &data_received));

@@ -77,7 +77,7 @@ async fn put_data(
             // Pin::new(&mut data.open(config.file_size_limit.bytes())),
             Pin::new(&mut data),
             None,
-            dcsrvrs::headers::Headers::from(headers),
+            dcsrvrs::headers::Headers::from(headers).0,
         )
         .await
     {

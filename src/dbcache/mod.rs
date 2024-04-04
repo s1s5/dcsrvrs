@@ -132,7 +132,7 @@ pub async fn run_server(
 mod tests {
 
     use super::*;
-    use std::{path::Path, pin::Pin};
+    use std::{collections::HashMap, path::Path, pin::Pin};
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, BufReader};
 
@@ -164,7 +164,7 @@ mod tests {
 
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
-        let headers = crate::headers::Headers::default();
+        let headers = HashMap::new();
         dbc.set(
             key,
             Pin::new(&mut BufReader::new(value.as_slice())),
@@ -208,7 +208,7 @@ mod tests {
         let (dbc, disposer) = run_server(f.get_path(), 2, 128, 128).await.unwrap();
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
-        let headers = crate::headers::Headers::default();
+        let headers = HashMap::new();
         dbc.set(
             key,
             Pin::new(&mut BufReader::new(value.as_slice())),
@@ -266,7 +266,7 @@ mod tests {
             "blobv",
             Pin::new(&mut BufReader::new(data.as_slice())),
             None,
-            crate::headers::Headers::default(),
+            HashMap::new(),
         )
         .await?;
 

@@ -4,6 +4,7 @@ use std::{collections::HashMap, sync::Mutex};
 use anyhow::{bail, Result};
 use chrono::Local;
 use rkyv::{Archive, Deserialize, Serialize};
+use tracing::error;
 
 use crate::ioutil;
 
@@ -149,7 +150,13 @@ impl<'a> InmemoryCacheInner<'a> {
 
     fn get(&mut self, key: &str) -> Option<ioutil::Data> {
         let entry = self.entries.get(key)?;
-        let entry = rkyv::check_archived_root::<Entry>(entry).ok()?;
+        let entry = match rkyv::check_archived_root::<Entry>(entry) {
+            Ok(r) => Some(r),
+            Err(err) => {
+                error!("deserialize error: {err:?}");
+                None
+            }
+        }?;
         let entry: Entry = entry.deserialize(&mut rkyv::Infallible).unwrap();
 
         if entry
@@ -163,7 +170,7 @@ impl<'a> InmemoryCacheInner<'a> {
 
         Some(ioutil::Data::new_from_buf(
             entry.value.to_vec(),
-            crate::headers::Headers(entry.headers.clone()),
+            entry.headers.clone(),
         ))
     }
 
@@ -200,11 +207,9 @@ impl<'a> InmemoryCacheInner<'a> {
             &mut self.chunks[self.target_chunk]
         };
 
-        unsafe {
-            // unsafeにせざるを得ない...
-            let wrote = std::mem::transmute::<Data<'_>, Data<'a>>(chunk.push(data));
-            self.entries.insert(wrote.key, wrote.value);
-        }
+        // 自己参照だからunsafeにせざるを得ないと思われる
+        let wrote = unsafe { std::mem::transmute::<Data<'_>, Data<'a>>(chunk.push(data)) };
+        self.entries.insert(wrote.key, wrote.value);
 
         Ok(())
     }

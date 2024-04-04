@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::errors::Error;
 use super::ioutil;
 use derivative::Derivative;
@@ -24,7 +26,7 @@ pub struct SetBlobTask {
     #[derivative(Debug(format_with = "show_len"))]
     pub blob: Vec<u8>,
     pub expire_time: Option<i64>,
-    pub headers: crate::headers::Headers,
+    pub headers: HashMap<String, String>,
 }
 
 #[derive(Derivative)]
@@ -36,7 +38,7 @@ pub struct SetFileTask {
     pub size: usize,
     pub filename: String,
     pub expire_time: Option<i64>,
-    pub headers: crate::headers::Headers,
+    pub headers: HashMap<String, String>,
 }
 
 #[derive(Derivative)]
