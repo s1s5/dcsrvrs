@@ -12,6 +12,7 @@ use axum::{
     Extension, Router,
 };
 use clap::Parser;
+use dcsrvrs::util::normalize_path;
 use futures_util::TryStreamExt;
 use path_clean::PathClean;
 use serde::{Deserialize, Serialize};
@@ -49,8 +50,7 @@ struct Config {
 }
 
 fn path2key(path: PathBuf) -> PathBuf {
-    // TODO: 「../」とかで始まるパスの扱い
-    path.clean()
+    normalize_path(&path).clean()
 }
 
 async fn get_data(
