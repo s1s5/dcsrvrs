@@ -25,6 +25,7 @@ pub struct SetBlobTask {
     pub key: String,
     #[derivative(Debug(format_with = "show_len"))]
     pub blob: Vec<u8>,
+    pub sha256sum: Vec<u8>,
     pub expire_time: Option<i64>,
     pub headers: HashMap<String, String>,
 }
@@ -37,6 +38,7 @@ pub struct SetFileTask {
     pub key: String,
     pub size: usize,
     pub filename: String,
+    pub sha256sum: Vec<u8>,
     pub expire_time: Option<i64>,
     pub headers: HashMap<String, String>,
 }
@@ -71,11 +73,21 @@ pub struct FlushAllTask {
     pub tx: oneshot::Sender<Result<(usize, usize), Error>>,
 }
 
+#[derive(Debug)]
+pub struct KeyTaskResult {
+    pub key: String,
+    pub store_time: i64,
+    pub expire_time: Option<i64>,
+    pub access_time: i64,
+    pub size: i64,
+    pub sha256sum: Vec<u8>,
+}
+
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct KeysTask {
     #[derivative(Debug = "ignore")]
-    pub tx: oneshot::Sender<Result<Vec<(String, i64)>, Error>>,
+    pub tx: oneshot::Sender<Result<Vec<KeyTaskResult>, Error>>,
     pub max_num: i64,
     pub key: Option<String>,
     pub store_time: Option<i64>,

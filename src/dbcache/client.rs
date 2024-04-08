@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+
+use sha2::{Digest, Sha256};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::io::{self, AsyncRead, AsyncReadExt};
@@ -87,6 +89,10 @@ impl DBCacheClient {
         expire_time: Option<i64>,
         headers: HashMap<String, String>,
     ) -> Result<(), Error> {
+        let mut hasher = Sha256::new();
+        hasher.update(buf);
+        let sha256sum = hasher.finalize().to_vec();
+
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Task::SetBlob(SetBlobTask {
@@ -95,6 +101,7 @@ impl DBCacheClient {
                 blob: buf.into(),
                 expire_time,
                 headers,
+                sha256sum,
             }))
             .await
             .map_err(|_e| Error::SendError)?;
@@ -119,10 +126,12 @@ impl DBCacheClient {
             (self.data_root.join(&rel_path), rel_path)
         };
 
-        let (size, delete_file_on_failed) = {
+        let (size, delete_file_on_failed, sha256sum) = {
             fs::create_dir_all(abs_path.parent().unwrap()).map_err(Error::Io)?;
+            let mut hasher = Sha256::new();
             let mut writer = File::create(&abs_path).await.map_err(Error::Io)?;
             let delete_file_on_failed = DeleteFileOnFailed::new(&abs_path);
+            hasher.update(buf);
             writer.write_all(buf).await.map_err(Error::Io)?;
             // let num_wrote = copy(&mut readable, &mut writer).await.map_err(Error::Io)?;
             let mut size = buf.len();
@@ -132,6 +141,7 @@ impl DBCacheClient {
                 if read == 0 {
                     break;
                 }
+                hasher.update(&buf[..read]);
                 writer.write_all(&buf[..read]).await.map_err(Error::Io)?;
                 size += read;
             }
@@ -141,7 +151,7 @@ impl DBCacheClient {
             if size >= self.size_limit {
                 return Err(Error::FileSizeLimitExceeded);
             }
-            (size, delete_file_on_failed)
+            (size, delete_file_on_failed, hasher.finalize().to_vec())
         };
 
         let res = {
@@ -154,6 +164,7 @@ impl DBCacheClient {
                     expire_time,
                     filename: rel_path.to_str().unwrap().into(),
                     headers,
+                    sha256sum,
                 }))
                 .await
                 .map_err(|_e| Error::SendError)?;
@@ -264,7 +275,7 @@ impl DBCacheClient {
         key: Option<String>,
         store_time: Option<i64>,
         prefix: Option<String>,
-    ) -> Result<Vec<(String, i64)>, Error> {
+    ) -> Result<Vec<KeyTaskResult>, Error> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Task::Keys(KeysTask {

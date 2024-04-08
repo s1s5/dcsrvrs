@@ -1,5 +1,5 @@
 use super::errors::{DbFieldError, Error};
-use super::ioutil;
+use super::{ioutil, KeyTaskResult};
 use crate::imcache::InmemoryCache;
 use chrono::{DateTime, Local, Utc};
 use entity::cache;
@@ -33,6 +33,33 @@ struct LimitedCacheRowWithFilename {
 struct CacheKeyAndStoreTime {
     key: String,
     store_time: i64,
+    expire_time: Option<i64>,
+    access_time: i64,
+    size: i64,
+    sha256sum: Vec<u8>,
+}
+
+impl From<CacheKeyAndStoreTime> for KeyTaskResult {
+    fn from(val: CacheKeyAndStoreTime) -> Self {
+        KeyTaskResult {
+            key: val.key,
+            store_time: val.store_time,
+            expire_time: val.expire_time,
+            access_time: val.access_time,
+            size: val.size,
+            sha256sum: val.sha256sum,
+        }
+    }
+}
+
+struct SetInternalArg {
+    key: String,
+    size: i64,
+    sha256sum: Vec<u8>,
+    blob: Option<Vec<u8>>,
+    filename: Option<String>,
+    expire_time: Option<i64>,
+    headers: HashMap<String, String>,
 }
 
 pub struct DBCache {
@@ -162,19 +189,11 @@ impl DBCache {
         }
     }
 
-    async fn set_internal(
-        &mut self,
-        key: String,
-        size: i64,
-        blob: Option<Vec<u8>>,
-        filename: Option<String>,
-        expire_time: Option<i64>,
-        headers: HashMap<String, String>,
-    ) -> Result<(), Error> {
+    async fn set_internal(&mut self, arg: SetInternalArg) -> Result<(), Error> {
         let old_size = match cache::Entity::find()
             .select_only()
             .column(cache::Column::Size)
-            .filter(cache::Column::Key.eq(key.clone()))
+            .filter(cache::Column::Key.eq(arg.key.clone()))
             .into_model::<LimitedCacheRow>()
             .one(&self.conn)
             .await
@@ -190,23 +209,24 @@ impl DBCache {
 
         let now: DateTime<Utc> = Utc::now();
         let c = cache::ActiveModel {
-            key: Set(key),
+            key: Set(arg.key),
             store_time: Set(now.timestamp()),
-            expire_time: Set(expire_time),
+            expire_time: Set(arg.expire_time),
             access_time: Set(now.timestamp()),
-            size: Set(size),
-            filename: Set(filename),
-            value: Set(blob),
-            attr: Set(Some(bincode::serialize(&headers).unwrap())),
+            size: Set(arg.size),
+            sha256sum: Set(arg.sha256sum),
+            filename: Set(arg.filename),
+            value: Set(arg.blob),
+            attr: Set(Some(bincode::serialize(&arg.headers).unwrap())),
         };
 
         if old_size < 0 {
             self.entries += 1;
-            self.size += size as usize;
+            self.size += arg.size as usize;
             trace!("insert: {:?}", c);
             c.insert(&self.conn).await.map_err(Error::Db)?;
         } else {
-            self.size = ((self.size as i64) + size - old_size) as usize;
+            self.size = ((self.size as i64) + arg.size - old_size) as usize;
             trace!("update: {:?}", c);
             c.update(&self.conn).await.map_err(Error::Db)?;
         }
@@ -217,6 +237,7 @@ impl DBCache {
     pub async fn set_blob(
         &mut self,
         key: String,
+        sha256sum: Vec<u8>,
         blob: Vec<u8>,
         expire_time: Option<i64>,
         headers: HashMap<String, String>,
@@ -225,14 +246,15 @@ impl DBCache {
             let _ = inmemory.set(&key, &blob, expire_time, headers.clone());
         }
 
-        self.set_internal(
+        self.set_internal(SetInternalArg {
             key,
-            blob.len().try_into().unwrap(),
-            Some(blob),
-            None,
+            size: blob.len().try_into().unwrap(),
+            sha256sum,
+            blob: Some(blob),
+            filename: None,
             expire_time,
             headers,
-        )
+        })
         .await?;
         self.evict().await?;
         Ok(())
@@ -242,12 +264,21 @@ impl DBCache {
         &mut self,
         key: String,
         size: i64,
+        sha256sum: Vec<u8>,
         filename: String,
         expire_time: Option<i64>,
         headers: HashMap<String, String>,
     ) -> Result<(), Error> {
-        self.set_internal(key, size, None, Some(filename), expire_time, headers)
-            .await?;
+        self.set_internal(SetInternalArg {
+            key,
+            size,
+            sha256sum,
+            blob: None,
+            filename: Some(filename),
+            expire_time,
+            headers,
+        })
+        .await?;
         self.evict().await?;
         Ok(())
     }
@@ -445,7 +476,7 @@ impl DBCache {
         key: Option<String>,
         store_time: Option<i64>,
         prefix: Option<String>,
-    ) -> Result<Vec<(String, i64)>, Error> {
+    ) -> Result<Vec<KeyTaskResult>, Error> {
         let qs = cache::Entity::find();
 
         let qs = if key.is_some() && store_time.is_some() {
@@ -477,12 +508,16 @@ impl DBCache {
             .select_only()
             .column(cache::Column::Key)
             .column(cache::Column::StoreTime)
+            .column(cache::Column::ExpireTime)
+            .column(cache::Column::AccessTime)
+            .column(cache::Column::Size)
+            .column(cache::Column::Sha256sum)
             .into_model::<CacheKeyAndStoreTime>()
             .all(&self.conn)
             .await
             .map_err(Error::Db)?;
 
-        Ok(data.into_iter().map(|e| (e.key, e.store_time)).collect())
+        Ok(data.into_iter().map(|e| e.into()).collect())
     }
 }
 
@@ -529,7 +564,7 @@ mod tests {
         let value = vec![0, 1, 2, 3];
         let headers = HashMap::new();
         f.cache
-            .set_blob(key.into(), value, None, headers)
+            .set_blob(key.into(), vec![], value, None, headers)
             .await
             .unwrap();
 
@@ -590,6 +625,7 @@ mod tests {
             .set_file(
                 key.into(),
                 4,
+                vec![],
                 abs_path
                     .strip_prefix(&f.cache.data_root)
                     .unwrap()
@@ -650,18 +686,18 @@ mod tests {
         let value = vec![0, 1, 2, 3, 4, 5];
         let headers = HashMap::new();
         f.cache
-            .set_blob("A".into(), value.clone(), None, headers.clone())
+            .set_blob("A".into(), vec![], value.clone(), None, headers.clone())
             .await?;
         f.cache
-            .set_blob("B".into(), value.clone(), None, headers.clone())
-            .await?;
-
-        f.cache
-            .set_blob("C".into(), value.clone(), None, headers.clone())
+            .set_blob("B".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         f.cache
-            .set_blob("D".into(), value.clone(), None, headers.clone())
+            .set_blob("C".into(), vec![], value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("D".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         assert!(f.cache.entries == 2);
@@ -677,7 +713,7 @@ mod tests {
         assert!(data.is_some());
 
         f.cache
-            .set_blob("E".into(), value.clone(), None, headers.clone())
+            .set_blob("E".into(), vec![], value.clone(), None, headers.clone())
             .await
             .unwrap();
         assert!(f.cache.get("C").await.unwrap().is_some());
@@ -693,19 +729,19 @@ mod tests {
         let value = vec![0, 1, 2, 3, 4, 5];
         let headers = HashMap::new();
         f.cache
-            .set_blob("A".into(), value.clone(), None, headers.clone())
+            .set_blob("A".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         f.cache
-            .set_blob("B".into(), value.clone(), None, headers.clone())
+            .set_blob("B".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         f.cache
-            .set_blob("C".into(), value.clone(), None, headers.clone())
+            .set_blob("C".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         f.cache
-            .set_blob("D".into(), value.clone(), None, headers.clone())
+            .set_blob("D".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         assert!(f.cache.entries == 2);
@@ -725,25 +761,25 @@ mod tests {
         let value = vec![0, 1, 2, 3, 4, 5];
         let headers = HashMap::new();
         f.cache
-            .set_blob("A".into(), value.clone(), None, headers.clone())
+            .set_blob("A".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         f.cache
-            .set_blob("B".into(), value.clone(), None, headers.clone())
+            .set_blob("B".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         f.cache
-            .set_blob("C".into(), value.clone(), None, headers.clone())
+            .set_blob("C".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         f.cache
-            .set_blob("D".into(), value.clone(), None, headers.clone())
+            .set_blob("D".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
         let keys = f.cache.keys(100, None, None, None).await?;
 
         assert!(keys.len() == 4);
-        assert!(keys[0].0 == "A");
+        assert!(keys[0].key == "A");
 
         Ok(())
     }

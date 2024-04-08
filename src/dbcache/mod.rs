@@ -16,6 +16,7 @@ use self::server::DBCache;
 use self::task::*;
 use crate::imcache::InmemoryCache;
 use crate::ioutil;
+pub use task::KeyTaskResult;
 
 pub struct DBCacheDisposer {
     tx: mpsc::Sender<Task>,
@@ -68,7 +69,7 @@ pub async fn run_server(
                 Task::SetBlob(t) => {
                     t.tx.send(
                         dbcache
-                            .set_blob(t.key, t.blob, t.expire_time, t.headers)
+                            .set_blob(t.key, t.sha256sum, t.blob, t.expire_time, t.headers)
                             .await,
                     )
                     .or_else(|t| t.map(|_| ()))
@@ -79,6 +80,7 @@ pub async fn run_server(
                             .set_file(
                                 t.key,
                                 t.size.try_into().unwrap(),
+                                t.sha256sum,
                                 t.filename,
                                 t.expire_time,
                                 t.headers,
@@ -280,8 +282,9 @@ mod tests {
         .await?;
 
         let keys = dbc.keys(100, None, None, None).await?;
+
         assert!(keys.len() == 1);
-        assert!(keys[0].0 == *"blobv");
+        assert!(keys[0].key == *"blobv");
 
         let stat = dbc.stat().await?;
         assert!(

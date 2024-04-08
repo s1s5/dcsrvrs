@@ -1,3 +1,9 @@
+use std::fmt::Write;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::{error, fmt};
+
 use axum::{
     extract,
     http::StatusCode,
@@ -6,19 +12,16 @@ use axum::{
     Extension, Router,
 };
 use clap::Parser;
-use dcsrvrs::{
-    dbcache::{run_server, DBCacheClient},
-    imcache::InmemoryCache,
-};
 use futures_util::TryStreamExt;
 use path_clean::PathClean;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::{error, fmt};
 use tokio::signal;
 use tracing::{debug, info};
+
+use dcsrvrs::{
+    dbcache::{run_server, DBCacheClient, KeyTaskResult},
+    imcache::InmemoryCache,
+};
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -161,6 +164,29 @@ struct GetKeyArg {
 struct GetKeyResponse {
     key: String,
     store_time: i64,
+    expire_time: Option<i64>,
+    access_time: i64,
+    size: i64,
+    sha256sum: String,
+}
+
+impl From<KeyTaskResult> for GetKeyResponse {
+    fn from(value: KeyTaskResult) -> Self {
+        Self {
+            key: value.key,
+            store_time: value.store_time,
+            expire_time: value.expire_time,
+            access_time: value.access_time,
+            size: value.size,
+            sha256sum: value
+                .sha256sum
+                .into_iter()
+                .fold(String::new(), |mut output, b| {
+                    let _ = write!(output, "{b:02x}");
+                    output
+                }),
+        }
+    }
 }
 
 async fn keys(
@@ -176,14 +202,7 @@ async fn keys(
         )
         .await
     {
-        Ok(d) => Ok(axum::Json(
-            d.into_iter()
-                .map(|e| GetKeyResponse {
-                    key: e.0,
-                    store_time: e.1,
-                })
-                .collect(),
-        )),
+        Ok(d) => Ok(axum::Json(d.into_iter().map(|e| e.into()).collect())),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }

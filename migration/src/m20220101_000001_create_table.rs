@@ -27,6 +27,11 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Cache::ExpireTime).big_integer())
                     .col(ColumnDef::new(Cache::AccessTime).big_integer().not_null())
                     .col(ColumnDef::new(Cache::Size).big_unsigned().not_null())
+                    .col(
+                        ColumnDef::new(Cache::Sha256sum)
+                            .blob(BlobSize::Tiny)
+                            .not_null(),
+                    )
                     .col(ColumnDef::new(Cache::Filename).string())
                     .col(ColumnDef::new(Cache::Value).blob(BlobSize::Medium))
                     .col(ColumnDef::new(Cache::Attr).blob(BlobSize::Medium))
@@ -62,6 +67,7 @@ enum Cache {
     ExpireTime,
     AccessTime,
     Size,
+    Sha256sum,
     Filename,
     Value,
     Attr,

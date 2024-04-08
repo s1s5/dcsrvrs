@@ -813,6 +813,7 @@ dependencies = [
  "sea-orm",
  "sea-orm-migration",
  "serde",
+ "sha2",
  "sqlx",
  "tempfile",
  "tokio",
