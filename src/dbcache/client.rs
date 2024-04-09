@@ -275,6 +275,7 @@ impl DBCacheClient {
         key: Option<String>,
         store_time: Option<i64>,
         prefix: Option<String>,
+        key_contains: Option<String>,
     ) -> Result<Vec<KeyTaskResult>, Error> {
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -284,6 +285,7 @@ impl DBCacheClient {
                 key,
                 store_time,
                 prefix,
+                key_contains,
             }))
             .await
             .map_err(|_e| Error::SendError)?;

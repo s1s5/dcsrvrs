@@ -93,6 +93,7 @@ pub struct KeysTask {
     pub key: Option<String>,
     pub store_time: Option<i64>,
     pub prefix: Option<String>,
+    pub key_contains: Option<String>,
 }
 
 #[derive(Derivative)]

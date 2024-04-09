@@ -106,7 +106,7 @@ pub async fn run_server(
                         .or_else(|t| t.map(|_| ()))
                 }
                 Task::Keys(t) => {
-                    t.tx.send(dbcache.keys(t.max_num, t.key, t.store_time, t.prefix).await)
+                    t.tx.send(dbcache.keys(t.max_num, t.key, t.store_time, t.prefix, t.key_contains).await)
                         .or_else(|t| t.map(|_| ()))
                 }
                 Task::End(t) => {
@@ -281,7 +281,7 @@ mod tests {
         )
         .await?;
 
-        let keys = dbc.keys(100, None, None, None).await?;
+        let keys = dbc.keys(100, None, None, None, None).await?;
 
         assert!(keys.len() == 1);
         assert!(keys[0].key == *"blobv");

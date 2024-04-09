@@ -478,6 +478,7 @@ impl DBCache {
         key: Option<String>,
         store_time: Option<i64>,
         prefix: Option<String>,
+        key_contains: Option<String>,
     ) -> Result<Vec<KeyTaskResult>, Error> {
         let qs = cache::Entity::find();
 
@@ -499,6 +500,12 @@ impl DBCache {
 
         let qs = if let Some(prefix) = prefix {
             qs.filter(cache::Column::Key.starts_with(&prefix))
+        } else {
+            qs
+        };
+
+        let qs = if let Some(key_contains) = key_contains {
+            qs.filter(cache::Column::Key.contains(&key_contains))
         } else {
             qs
         };
@@ -779,10 +786,30 @@ mod tests {
             .set_blob("D".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
-        let keys = f.cache.keys(100, None, None, None).await?;
+        let keys = f.cache.keys(100, None, None, None, None).await?;
 
         assert!(keys.len() == 4);
         assert!(keys[0].key == "A");
+
+        let keys = f
+            .cache
+            .keys(
+                100,
+                Some(keys[1].key.clone()),
+                Some(keys[1].store_time),
+                None,
+                None,
+            )
+            .await?;
+        assert!(keys.len() == 2);
+        assert!(keys[0].key == "C");
+
+        let keys = f
+            .cache
+            .keys(100, None, None, None, Some("D".to_string()))
+            .await?;
+        assert!(keys.len() == 1);
+        assert!(keys[0].key == "D");
 
         Ok(())
     }

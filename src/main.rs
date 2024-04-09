@@ -159,6 +159,7 @@ struct GetKeyArg {
     key: Option<String>,
     store_time: Option<i64>,
     prefix: Option<String>,
+    key_contains: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -202,6 +203,7 @@ async fn keys(
             arg.key.clone(),
             arg.store_time,
             arg.prefix.clone(),
+            arg.key_contains.clone(),
         )
         .await
     {
