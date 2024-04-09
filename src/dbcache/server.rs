@@ -37,6 +37,7 @@ struct CacheKeyAndStoreTime {
     access_time: i64,
     size: i64,
     sha256sum: Vec<u8>,
+    attr: Option<Vec<u8>>,
 }
 
 impl From<CacheKeyAndStoreTime> for KeyTaskResult {
@@ -48,6 +49,7 @@ impl From<CacheKeyAndStoreTime> for KeyTaskResult {
             access_time: val.access_time,
             size: val.size,
             sha256sum: val.sha256sum,
+            headers: bincode::deserialize(&val.attr.unwrap_or_default()).unwrap_or(HashMap::new()),
         }
     }
 }
@@ -512,6 +514,7 @@ impl DBCache {
             .column(cache::Column::AccessTime)
             .column(cache::Column::Size)
             .column(cache::Column::Sha256sum)
+            .column(cache::Column::Attr)
             .into_model::<CacheKeyAndStoreTime>()
             .all(&self.conn)
             .await

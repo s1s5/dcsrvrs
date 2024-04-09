@@ -81,6 +81,7 @@ pub struct KeyTaskResult {
     pub access_time: i64,
     pub size: i64,
     pub sha256sum: Vec<u8>,
+    pub headers: HashMap<String, String>,
 }
 
 #[derive(Derivative)]

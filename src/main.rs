@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -168,6 +169,7 @@ struct GetKeyResponse {
     access_time: i64,
     size: i64,
     sha256sum: String,
+    headers: HashMap<String, String>,
 }
 
 impl From<KeyTaskResult> for GetKeyResponse {
@@ -185,6 +187,7 @@ impl From<KeyTaskResult> for GetKeyResponse {
                     let _ = write!(output, "{b:02x}");
                     output
                 }),
+            headers: value.headers,
         }
     }
 }
