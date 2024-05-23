@@ -19,6 +19,14 @@ pub struct GetTask {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
+pub struct TouchTask {
+    #[derivative(Debug = "ignore")]
+    pub tx: oneshot::Sender<Result<bool, Error>>,
+    pub key: String,
+}
+
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct SetBlobTask {
     #[derivative(Debug = "ignore")]
     pub tx: oneshot::Sender<Result<(), Error>>,
@@ -73,13 +81,15 @@ pub struct FlushAllTask {
     pub tx: oneshot::Sender<Result<(usize, usize), Error>>,
 }
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct KeyTaskResult {
     pub key: String,
     pub store_time: i64,
     pub expire_time: Option<i64>,
     pub access_time: i64,
     pub size: i64,
+    #[derivative(Debug = "ignore")]
     pub sha256sum: Vec<u8>,
     pub headers: HashMap<String, String>,
 }
@@ -106,6 +116,7 @@ pub struct EndTask {
 #[derive(Debug)]
 pub enum Task {
     Get(GetTask),
+    Touch(TouchTask),
     SetBlob(SetBlobTask),
     SetFile(SetFileTask),
     Del(DelTask),

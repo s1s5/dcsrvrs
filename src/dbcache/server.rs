@@ -191,6 +191,33 @@ impl DBCache {
         }
     }
 
+    pub async fn touch(&self, key: &str) -> Result<bool, Error> {
+        let c: Option<cache::Model> = cache::Entity::find()
+            .filter(cache::Column::Key.eq(key))
+            .one(&self.conn)
+            .await
+            .map_err(Error::Db)?;
+        match c {
+            None => Ok(false),
+            Some(v) => {
+                let now = Local::now().timestamp();
+
+                if v.expire_time.filter(|f| f < &now).is_some() {
+                    return Ok(false);
+                }
+
+                {
+                    // アクセス日時の更新
+                    let mut av: cache::ActiveModel = v.clone().into();
+                    av.access_time = Set(Local::now().timestamp());
+                    av.update(&self.conn).await.map_err(Error::Db)?;
+                }
+
+                Ok(true)
+            }
+        }
+    }
+
     async fn set_internal(&mut self, arg: SetInternalArg) -> Result<(), Error> {
         let old_size = match cache::Entity::find()
             .select_only()
