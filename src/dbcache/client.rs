@@ -64,15 +64,16 @@ impl DBCacheClient {
     pub async fn get(&self, key: &str) -> Result<Option<ioutil::Data>, Error> {
         if let Some(inmemory) = self.inmemory.clone() {
             if let Some(data) = inmemory.get(key) {
-                let (tx, rx) = oneshot::channel();
-                self.tx
-                    .send(Task::Touch(TouchTask {
-                        tx,
-                        key: key.into(),
-                    }))
-                    .await
-                    .map_err(|_e| Error::SendError)?;
-                let _ = rx.await;
+                let ttx = self.tx.clone();
+                let key = key.to_string();
+                tokio::spawn(async move {
+                    let (tx, rx) = oneshot::channel();
+                    let _ = ttx
+                        .send(Task::Touch(TouchTask { tx, key }))
+                        .await
+                        .map_err(|_e| Error::SendError);
+                    let _ = rx.await;
+                });
                 return Ok(Some(data));
             }
         }

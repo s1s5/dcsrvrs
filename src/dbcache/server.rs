@@ -30,6 +30,12 @@ struct LimitedCacheRowWithFilename {
 }
 
 #[derive(FromQueryResult)]
+struct LimitedCacheRowWithExpireTime {
+    key: String,
+    expire_time: Option<i64>,
+}
+
+#[derive(FromQueryResult)]
 struct CacheKeyAndStoreTime {
     key: String,
     store_time: i64,
@@ -193,8 +199,12 @@ impl DBCache {
     }
 
     pub async fn touch(&self, key: &str) -> Result<bool, Error> {
-        let c: Option<cache::Model> = cache::Entity::find()
+        let c: Option<LimitedCacheRowWithExpireTime> = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
+            .select_only()
+            .column(cache::Column::Key)
+            .column(cache::Column::ExpireTime)
+            .into_model::<LimitedCacheRowWithExpireTime>()
             .one(&self.conn)
             .await
             .map_err(Error::Db)?;
@@ -209,11 +219,13 @@ impl DBCache {
 
                 {
                     // アクセス日時の更新
-                    let mut av: cache::ActiveModel = v.clone().into();
+                    let mut av: cache::ActiveModel = cache::ActiveModel {
+                        key: Set(v.key),
+                        ..Default::default()
+                    };
                     av.access_time = Set(Local::now().timestamp());
                     av.update(&self.conn).await.map_err(Error::Db)?;
                 }
-
                 Ok(true)
             }
         }
