@@ -55,7 +55,7 @@ impl axum::response::IntoResponse for Data {
             builder = builder.header(key, value);
         }
         builder = builder.header("Content-length", self.size);
-        builder = builder.header("ETag", self.sha256sum);
+        builder = builder.header("ETag", hex::encode(self.sha256sum));
         match self.data {
             DataInternal::Bytes(b) => builder.body(axum::body::Body::from(b)).unwrap(),
             DataInternal::File(f) => builder

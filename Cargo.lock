@@ -805,6 +805,7 @@ dependencies = [
  "derivative",
  "entity",
  "futures-util",
+ "hex",
  "log",
  "migration",
  "path-clean",
