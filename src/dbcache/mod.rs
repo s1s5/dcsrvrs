@@ -66,6 +66,10 @@ pub async fn run_server(
                     t.tx.send(dbcache.get(&t.key).await)
                         .or_else(|t| t.map(|_| ()))
                 }
+                Task::Touch(t) => {
+                    t.tx.send(dbcache.touch(&t.key).await)
+                        .or_else(|t| t.map(|_| ()))
+                }
                 Task::SetBlob(t) => {
                     t.tx.send(
                         dbcache
@@ -106,8 +110,12 @@ pub async fn run_server(
                         .or_else(|t| t.map(|_| ()))
                 }
                 Task::Keys(t) => {
-                    t.tx.send(dbcache.keys(t.max_num, t.key, t.store_time, t.prefix, t.key_contains).await)
-                        .or_else(|t| t.map(|_| ()))
+                    t.tx.send(
+                        dbcache
+                            .keys(t.max_num, t.key, t.store_time, t.prefix, t.key_contains)
+                            .await,
+                    )
+                    .or_else(|t| t.map(|_| ()))
                 }
                 Task::End(t) => {
                     t.tx.send(()).unwrap();

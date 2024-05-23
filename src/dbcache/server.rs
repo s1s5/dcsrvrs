@@ -180,6 +180,7 @@ impl DBCache {
                             Some(ioutil::Data::new_from_file(
                                 f,
                                 v.size.try_into().unwrap(),
+                                v.sha256sum.clone(),
                                 headers,
                             ))
                         })
