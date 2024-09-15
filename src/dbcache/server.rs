@@ -470,7 +470,7 @@ impl DBCache {
     }
 
     async fn evict(&mut self) -> Result<(usize, usize), Error> {
-        trace!("before evict entires={}, bytes={}", self.entries, self.size);
+        debug!("before evict entires={}, bytes={}", self.entries, self.size);
         let (expired_entries, expired_size) = if (self.evicted_at
             + std::time::Duration::from_secs_f64(self.evict_interval))
             < std::time::Instant::now()
@@ -479,7 +479,7 @@ impl DBCache {
         } else {
             (0, 0)
         };
-        trace!(
+        debug!(
             "after evict entires={}, bytes={}, expired.entries={expired_entries}, expired.bytes={expired_size}",
             self.entries,
             self.size,
@@ -492,7 +492,7 @@ impl DBCache {
             let goal_size = (self.evict_threshold * (self.capacity as f64)) as usize;
             self.evict_old(goal_size).await?
         };
-        trace!(
+        debug!(
             "after evict_old entires={}, bytes={}, old.entries={old_deleted_entries}, old.bytes={old_deleted_size}",
             self.entries,
             self.size
