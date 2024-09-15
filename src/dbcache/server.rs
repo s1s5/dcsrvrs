@@ -443,7 +443,7 @@ impl DBCache {
                     .column(cache::Column::Size)
                     .column(cache::Column::Filename)
                     .into_model::<LimitedCacheRowWithFilename>()
-                    .paginate(&self.conn, 100),
+                    .paginate(&self.conn, 1000),
                 true,
                 self.capacity,
             )
@@ -461,7 +461,7 @@ impl DBCache {
                     .column(cache::Column::Size)
                     .column(cache::Column::Filename)
                     .into_model::<LimitedCacheRowWithFilename>()
-                    .paginate(&self.conn, 100),
+                    .paginate(&self.conn, 1000),
                 false,
                 goal_size,
             )
