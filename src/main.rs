@@ -15,6 +15,7 @@ use axum::{
 use clap::Parser;
 use dcsrvrs::util::normalize_path;
 use futures_util::TryStreamExt;
+use log::error;
 use path_clean::PathClean;
 use serde::{Deserialize, Serialize};
 use tokio::signal;
@@ -59,13 +60,16 @@ async fn get_data(
     client: Extension<Arc<DBCacheClient>>,
 ) -> impl IntoResponse {
     // Result<dyn Stream<Item = Result<bytes::Bytes>>, StatusCode> {
-    let key: String = path2key(path).to_str().unwrap().into();
+    let key: String = path2key(path.clone()).to_str().unwrap().into();
     match client.get(&key).await {
         Ok(f) => match f {
             Some(x) => Ok(x.into_response()),
             None => Err(StatusCode::NOT_FOUND),
         },
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(err) => {
+            error!("get path={path:?}, error={err:?}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
 }
 
@@ -76,7 +80,7 @@ async fn put_data(
     // // config: Extension<Config>,
     request: axum::extract::Request,
 ) -> StatusCode {
-    let key: String = path2key(path).to_str().unwrap().into();
+    let key: String = path2key(path.clone()).to_str().unwrap().into();
     if key.starts_with("-/") {
         return StatusCode::BAD_REQUEST;
     }
@@ -98,9 +102,12 @@ async fn put_data(
         .await
     {
         Ok(_) => StatusCode::OK,
-        Err(e) => match e {
+        Err(err) => match err {
             dcsrvrs::dbcache::Error::FileSizeLimitExceeded => StatusCode::BAD_REQUEST,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => {
+                error!("put path={path:?}, error={err:?}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         },
     }
 }
@@ -109,7 +116,7 @@ async fn delete_data(
     extract::Path(path): extract::Path<PathBuf>,
     client: Extension<Arc<DBCacheClient>>,
 ) -> StatusCode {
-    let key: String = path2key(path).to_str().unwrap().into();
+    let key: String = path2key(path.clone()).to_str().unwrap().into();
     if key.starts_with("-/") {
         return StatusCode::BAD_REQUEST;
     }
@@ -122,7 +129,10 @@ async fn delete_data(
                 StatusCode::OK
             }
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Err(err) => {
+            error!("delete path={path:?}, error={err:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
 }
 
@@ -142,7 +152,10 @@ async fn healthcheck(
             size: s.size,
             capacity: s.capacity,
         })),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(err) => {
+            error!("healthcheck error={err:?}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
 }
 
