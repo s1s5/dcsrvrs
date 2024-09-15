@@ -23,6 +23,12 @@ struct LimitedCacheRow {
 }
 
 #[derive(FromQueryResult)]
+struct SumOfSizeCacheRow {
+    count: i64,
+    sum_of_size: Option<i64>,
+}
+
+#[derive(FromQueryResult)]
 struct LimitedCacheRowWithFilename {
     key: String,
     size: i64,
@@ -90,6 +96,7 @@ impl DBCache {
         capacity: usize,
         inmemory: Option<Arc<InmemoryCache>>,
     ) -> Result<DBCache, Error> {
+        debug!("creating dbcache instance");
         let connection_options = SqliteConnectOptions::new()
             .filename(
                 db_path
@@ -111,18 +118,33 @@ impl DBCache {
             .await
             .expect("Failed to run migrations");
 
-        let (mut entries, mut size) = (0, 0);
-        let mut pages = cache::Entity::find()
+        // let (mut entries, mut size) = (0, 0);
+        // let mut pages = cache::Entity::find()
+        //     .select_only()
+        //     .column(cache::Column::Size)
+        //     .into_model::<LimitedCacheRow>()
+        //     .paginate(&conn, 1000);
+        // while let Some(el) = pages.fetch_and_next().await.map_err(Error::Db)? {
+        //     for e in el {
+        //         entries += 1;
+        //         size += e.size;
+        //     }
+        // }
+        debug!("getting all entries");
+        let stat = cache::Entity::find()
             .select_only()
-            .column(cache::Column::Size)
-            .into_model::<LimitedCacheRow>()
-            .paginate(&conn, 1000);
-        while let Some(el) = pages.fetch_and_next().await.map_err(Error::Db)? {
-            for e in el {
-                entries += 1;
-                size += e.size;
-            }
+            .column_as(cache::Column::Key.count(), "count")
+            .column_as(cache::Column::Size.sum(), "sum_of_size")
+            .into_model::<SumOfSizeCacheRow>()
+            .all(&conn)
+            .await
+            .expect("Failed to get stats");
+        if stat.len() != 1 {
+            panic!("Unexpected Error");
         }
+        let entries = stat[0].count as usize;
+        let size = stat[0].sum_of_size.unwrap_or(0);
+        debug!("num_entries={entries}, size={size}[bytes]");
 
         Ok(DBCache {
             conn,
