@@ -1,5 +1,5 @@
 # ------------- build ----------------
-FROM clux/muslrust:1.77.1-stable as builder
+FROM clux/muslrust:1.77.1-stable AS builder
 
 RUN mkdir -p /rust
 WORKDIR /rust
@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/rust/target \
 # ------------- runtime ----------------
 FROM scratch
 
-ENV RUST_LOG sqlx=error,sea_orm_migration=error,info
+ENV RUST_LOG=sqlx=error,sea_orm_migration=error,info
 
 # バイナリのコピー
 COPY --from=builder /app /app
