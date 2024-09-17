@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Mutex};
 
 use anyhow::{bail, Result};
 use chrono::Local;
+use rand::Rng;
 use rkyv::{Archive, Deserialize, Serialize};
 use tracing::error;
 
@@ -132,15 +133,17 @@ struct Entry {
 struct InmemoryCacheInner<'a> {
     bytes_per_chunk: usize,
     target_chunk: usize,
+    max_num_of_entries: usize,
     entries: HashMap<&'a str, &'a [u8]>,
     chunks: Vec<Chunk>,
 }
 
 impl<'a> InmemoryCacheInner<'a> {
-    fn new(num_chunks: usize, bytes_per_chunk: usize) -> Self {
+    fn new(num_chunks: usize, bytes_per_chunk: usize, max_num_of_entries: usize) -> Self {
         Self {
             bytes_per_chunk,
             target_chunk: 0,
+            max_num_of_entries,
             entries: HashMap::new(),
             chunks: (0..num_chunks)
                 .map(|_| Chunk::new(bytes_per_chunk))
@@ -195,6 +198,10 @@ impl<'a> InmemoryCacheInner<'a> {
         }
         self.entries.remove(key);
 
+        if self.entries.len() > self.max_num_of_entries {
+            self.random_delete();
+        }
+
         let chunk = if self.chunks[self.target_chunk].remain() < data.len() {
             self.target_chunk = (self.target_chunk + 1) % self.chunks.len();
             let chunk = &mut self.chunks[self.target_chunk];
@@ -217,6 +224,19 @@ impl<'a> InmemoryCacheInner<'a> {
     fn del(&mut self, key: &str) -> bool {
         self.entries.remove(key).is_some()
     }
+
+    fn random_delete(&mut self) {
+        let mut rng = rand::thread_rng();
+        let keys: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|_| rng.gen_bool(0.2))
+            .copied()
+            .collect();
+        for key in keys {
+            self.entries.remove(key);
+        }
+    }
 }
 
 pub struct InmemoryCache {
@@ -224,11 +244,12 @@ pub struct InmemoryCache {
 }
 
 impl InmemoryCache {
-    pub fn new(num_chunks: usize, bytes_per_chunk: usize) -> Self {
+    pub fn new(num_chunks: usize, bytes_per_chunk: usize, max_num_of_entries: usize) -> Self {
         Self {
             inner: Mutex::new(Pin::new(Box::new(InmemoryCacheInner::new(
                 num_chunks,
                 bytes_per_chunk,
+                max_num_of_entries,
             )))),
         }
     }
@@ -257,7 +278,7 @@ mod tests {
 
     use super::*;
     use anyhow::{anyhow, Result};
-    use rand::{distributions::Alphanumeric, rngs::StdRng, Rng as _, SeedableRng as _};
+    use rand::{distributions::Alphanumeric, rngs::StdRng, SeedableRng as _};
 
     #[test]
     fn test_data() -> Result<()> {
@@ -279,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_cache() -> Result<()> {
-        let cache = InmemoryCache::new(1, 1024);
+        let cache = InmemoryCache::new(1, 1024, 1000);
 
         cache.set("hello", "world".as_bytes(), None, HashMap::new())?;
 
@@ -311,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_cache_long_key() -> Result<()> {
-        let cache = InmemoryCache::new(2, 32768);
+        let cache = InmemoryCache::new(2, 32768, 1000);
         for i in 0..1024 {
             let key = rand_key(i);
             let value = rand_vec(i);
@@ -331,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_cache_long_value() -> Result<()> {
-        let cache = InmemoryCache::new(2, 1 << 20);
+        let cache = InmemoryCache::new(2, 1 << 20, 1000);
         for i in (0..(1 << 15)).step_by(512) {
             let key = rand_key(i & 511);
             let value = rand_vec(i);
@@ -351,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_cache_evict() -> Result<()> {
-        let cache = InmemoryCache::new(3, 500);
+        let cache = InmemoryCache::new(3, 500, 1000);
         let datas: Vec<_> = (0..100).map(|_| (rand_key(16), rand_vec(128))).collect();
 
         for (key, value) in datas.iter().take(6) {
