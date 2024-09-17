@@ -49,6 +49,15 @@ struct Config {
 
     #[arg(long, default_value_t = 1 << 20)]
     inmemory_bytes_per_chunk: usize,
+
+    #[arg(long, default_value_t = 1 << 15)]
+    inmemory_max_num_of_entries: usize,
+
+    #[arg(long, default_value_t = 1000)]
+    auto_reconnect_threshold: usize,
+
+    #[arg(long, action)]
+    debug_disable_auto_evict: bool,
 }
 
 fn path2key(path: PathBuf) -> PathBuf {
@@ -161,8 +170,24 @@ async fn healthcheck(
 
 async fn flushall(client: Extension<Arc<DBCacheClient>>) -> StatusCode {
     match client.flushall().await {
+        Ok(r) => {
+            info!("flushall {r:?}");
+            StatusCode::OK
+        }
+        Err(err) => {
+            error!("flushall failed. error={err:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+async fn reset_connection(client: Extension<Arc<DBCacheClient>>) -> StatusCode {
+    match client.reset_connection().await {
         Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Err(err) => {
+            error!("flushall failed. error={err:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
 }
 
@@ -265,6 +290,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Arc::new(InmemoryCache::new(
             config.inmemory_num_chunks,
             config.inmemory_bytes_per_chunk,
+            config.inmemory_max_num_of_entries,
         )))
     };
     let (client, disposer) = run_server(
@@ -273,6 +299,8 @@ async fn main() -> anyhow::Result<()> {
         config.file_size_limit.try_into().unwrap(),
         config.capacity.try_into().unwrap(),
         inmemory_cache,
+        !config.debug_disable_auto_evict,
+        config.auto_reconnect_threshold,
     )
     .await
     .expect("failed to run cache server");
@@ -286,6 +314,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/*path", get(get_data).put(put_data).delete(delete_data))
         .route("/-/healthcheck/", get(healthcheck))
         .route("/-/flushall/", post(flushall))
+        .route("/-/resetconnection/", post(reset_connection))
         .route("/-/keys/", post(keys))
         .layer(Extension(config))
         .layer(Extension(client))

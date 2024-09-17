@@ -108,6 +108,13 @@ pub struct KeysTask {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
+pub struct ResetConnectionTask {
+    #[derivative(Debug = "ignore")]
+    pub tx: oneshot::Sender<Result<(), Error>>,
+}
+
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct EndTask {
     #[derivative(Debug = "ignore")]
     pub tx: oneshot::Sender<()>,
@@ -123,5 +130,6 @@ pub enum Task {
     Stat(StatTask),
     FlushAll(FlushAllTask),
     Keys(KeysTask),
+    ResetConnection(ResetConnectionTask),
     End(EndTask),
 }

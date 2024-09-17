@@ -77,7 +77,8 @@ struct SetInternalArg {
 }
 
 pub struct DBCache {
-    conn: DbConn,
+    db_path: PathBuf,
+    _conn: Option<DbConn>,
     data_root: PathBuf,
     entries: usize,
     size: usize,
@@ -87,6 +88,31 @@ pub struct DBCache {
     evicted_at: std::time::Instant,
     evicted_size: usize,
     inmemory: Option<Arc<InmemoryCache>>,
+    auto_evict: bool,
+}
+
+async fn create_connection(db_path: &Path) -> Result<DatabaseConnection, Error> {
+    let connection_options = SqliteConnectOptions::new()
+        .filename(
+            db_path
+                .to_str()
+                .ok_or(Error::Other(format!("db_path:'{db_path:?}' ValueError")))?,
+        )
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
+
+    let sqlite_pool = SqlitePoolOptions::new()
+        .max_connections(10)
+        .connect_with(connection_options)
+        .await
+        .map_err(|err| Error::Other(format!("connection failed {err:?}")))?;
+
+    let conn = SqlxSqliteConnector::from_sqlx_sqlite_pool(sqlite_pool);
+    Migrator::up(&conn, None)
+        .await
+        .expect("Failed to run migrations");
+    Ok(conn)
 }
 
 impl DBCache {
@@ -95,41 +121,11 @@ impl DBCache {
         data_root: &Path,
         capacity: usize,
         inmemory: Option<Arc<InmemoryCache>>,
+        auto_evict: bool,
     ) -> Result<DBCache, Error> {
         debug!("creating dbcache instance");
-        let connection_options = SqliteConnectOptions::new()
-            .filename(
-                db_path
-                    .to_str()
-                    .ok_or(Error::Other(format!("db_path:'{db_path:?}' ValueError")))?,
-            )
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal);
+        let conn = create_connection(db_path).await?;
 
-        let sqlite_pool = SqlitePoolOptions::new()
-            .max_connections(10)
-            .connect_with(connection_options)
-            .await
-            .map_err(|err| Error::Other(format!("connection failed {err:?}")))?;
-
-        let conn = SqlxSqliteConnector::from_sqlx_sqlite_pool(sqlite_pool);
-        Migrator::up(&conn, None)
-            .await
-            .expect("Failed to run migrations");
-
-        // let (mut entries, mut size) = (0, 0);
-        // let mut pages = cache::Entity::find()
-        //     .select_only()
-        //     .column(cache::Column::Size)
-        //     .into_model::<LimitedCacheRow>()
-        //     .paginate(&conn, 1000);
-        // while let Some(el) = pages.fetch_and_next().await.map_err(Error::Db)? {
-        //     for e in el {
-        //         entries += 1;
-        //         size += e.size;
-        //     }
-        // }
         debug!("getting all entries");
         let stat = cache::Entity::find()
             .select_only()
@@ -147,7 +143,8 @@ impl DBCache {
         debug!("num_entries={entries}, size={size}[bytes]");
 
         Ok(DBCache {
-            conn,
+            db_path: db_path.into(),
+            _conn: Some(conn),
             data_root: data_root.into(),
             entries,
             size: size as usize,
@@ -157,23 +154,30 @@ impl DBCache {
             evicted_at: std::time::Instant::now(),
             evicted_size: size as usize,
             inmemory,
+            auto_evict,
         })
     }
 
     pub fn entries(&self) -> usize {
         self.entries
     }
+
     pub fn size(&self) -> usize {
         self.size
     }
+
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    fn get_conn(&self) -> &DbConn {
+        self._conn.as_ref().unwrap()
     }
 
     pub async fn get(&self, key: &str) -> Result<Option<ioutil::Data>, Error> {
         let c: Option<cache::Model> = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
-            .one(&self.conn)
+            .one(self.get_conn())
             .await
             .map_err(Error::Db)?;
         match c {
@@ -189,7 +193,7 @@ impl DBCache {
                     // アクセス日時の更新
                     let mut av: cache::ActiveModel = v.clone().into();
                     av.access_time = Set(Local::now().timestamp());
-                    av.update(&self.conn).await.map_err(Error::Db)?;
+                    av.update(self.get_conn()).await.map_err(Error::Db)?;
                 }
 
                 let headers: HashMap<String, String> =
@@ -227,7 +231,7 @@ impl DBCache {
             .column(cache::Column::Key)
             .column(cache::Column::ExpireTime)
             .into_model::<LimitedCacheRowWithExpireTime>()
-            .one(&self.conn)
+            .one(self.get_conn())
             .await
             .map_err(Error::Db)?;
         match c {
@@ -246,7 +250,7 @@ impl DBCache {
                         ..Default::default()
                     };
                     av.access_time = Set(Local::now().timestamp());
-                    av.update(&self.conn).await.map_err(Error::Db)?;
+                    av.update(self.get_conn()).await.map_err(Error::Db)?;
                 }
                 Ok(true)
             }
@@ -259,7 +263,7 @@ impl DBCache {
             .column(cache::Column::Size)
             .filter(cache::Column::Key.eq(arg.key.clone()))
             .into_model::<LimitedCacheRow>()
-            .one(&self.conn)
+            .one(self.get_conn())
             .await
             .map_err(Error::Db)?
         {
@@ -288,11 +292,11 @@ impl DBCache {
             self.entries += 1;
             self.size += arg.size as usize;
             trace!("insert: {:?}", c);
-            c.insert(&self.conn).await.map_err(Error::Db)?;
+            c.insert(self.get_conn()).await.map_err(Error::Db)?;
         } else {
             self.size = ((self.size as i64) + arg.size - old_size) as usize;
             trace!("update: {:?}", c);
-            c.update(&self.conn).await.map_err(Error::Db)?;
+            c.update(self.get_conn()).await.map_err(Error::Db)?;
         }
         debug!("after insert entries={}, bytes={}", self.entries, self.size);
         Ok(())
@@ -320,7 +324,9 @@ impl DBCache {
             headers,
         })
         .await?;
-        self.evict().await?;
+        if self.auto_evict {
+            self.evict().await?;
+        }
         Ok(())
     }
 
@@ -343,7 +349,9 @@ impl DBCache {
             headers,
         })
         .await?;
-        self.evict().await?;
+        if self.auto_evict {
+            self.evict().await?;
+        }
         Ok(())
     }
 
@@ -354,7 +362,7 @@ impl DBCache {
 
         let c = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
-            .one(&self.conn)
+            .one(self.get_conn())
             .await
             .map_err(Error::Db)?;
         Ok(match c {
@@ -363,7 +371,11 @@ impl DBCache {
                 self.size -= x.size as usize;
 
                 let filename = x.filename.clone();
-                let s = x.delete(&self.conn).await.map_err(Error::Db)?.rows_affected;
+                let s = x
+                    .delete(self.get_conn())
+                    .await
+                    .map_err(Error::Db)?
+                    .rows_affected;
                 if let Some(filename) = filename {
                     tokio::fs::remove_file(self.data_root.join(filename))
                         .await
@@ -380,6 +392,7 @@ impl DBCache {
         mut pages: Paginator<'_, DatabaseConnection, SelectModel<LimitedCacheRowWithFilename>>,
         delete_all: bool,
         goal_size: usize,
+        mut max_iter: usize,
     ) -> Result<(Vec<String>, Vec<String>, usize), Error> {
         let mut keys: Vec<String> = Vec::new();
         let mut deleted_files: Vec<String> = Vec::new();
@@ -397,6 +410,10 @@ impl DBCache {
                     break 'outer;
                 }
             }
+            if max_iter == 1 {
+                break;
+            }
+            max_iter -= 1;
         }
         Ok((keys, deleted_files, deleted_size))
     }
@@ -414,7 +431,7 @@ impl DBCache {
 
         let res = cache::Entity::delete_many()
             .filter(cache::Column::Key.is_in(keys))
-            .exec(&self.conn)
+            .exec(self.get_conn())
             .await
             .map_err(Error::Db)?;
 
@@ -443,9 +460,10 @@ impl DBCache {
                     .column(cache::Column::Size)
                     .column(cache::Column::Filename)
                     .into_model::<LimitedCacheRowWithFilename>()
-                    .paginate(&self.conn, 1000),
+                    .paginate(self.get_conn(), 100),
                 true,
                 self.capacity,
+                1,
             )
             .await?;
         self.evict_rows_delete(keys, files, size).await
@@ -461,9 +479,10 @@ impl DBCache {
                     .column(cache::Column::Size)
                     .column(cache::Column::Filename)
                     .into_model::<LimitedCacheRowWithFilename>()
-                    .paginate(&self.conn, 1000),
+                    .paginate(self.get_conn(), 100),
                 false,
                 goal_size,
+                1,
             )
             .await?;
         self.evict_rows_delete(keys, files, size).await
@@ -522,8 +541,9 @@ impl DBCache {
                         .column(cache::Column::Size)
                         .column(cache::Column::Filename)
                         .into_model::<LimitedCacheRowWithFilename>()
-                        .paginate(&self.conn, 1000),
+                        .paginate(self.get_conn(), 1000),
                     true,
+                    0,
                     0,
                 )
                 .await?;
@@ -585,11 +605,19 @@ impl DBCache {
             .column(cache::Column::Sha256sum)
             .column(cache::Column::Attr)
             .into_model::<CacheKeyAndStoreTime>()
-            .all(&self.conn)
+            .all(self.get_conn())
             .await
             .map_err(Error::Db)?;
 
         Ok(data.into_iter().map(|e| e.into()).collect())
+    }
+
+    pub async fn reset_connection(&mut self) -> Result<(), Error> {
+        if let Some(old_conn) = self._conn.take() {
+            old_conn.close().await.map_err(Error::Db)?;
+        }
+        self._conn = Some(create_connection(&self.db_path).await?);
+        Ok(())
     }
 }
 
@@ -620,6 +648,7 @@ mod tests {
                     &tempdir.path().join("data"),
                     capacity,
                     None,
+                    true,
                 )
                 .await
                 .unwrap(),
@@ -646,7 +675,7 @@ mod tests {
         // dbに登録されているか
         let r = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
-            .one(&f.cache.conn)
+            .one(f.cache.get_conn())
             .await
             .unwrap()
             .unwrap();
@@ -716,7 +745,7 @@ mod tests {
         // databaseに値が登録されているか
         let r = cache::Entity::find()
             .filter(cache::Column::Key.eq(key))
-            .one(&f.cache.conn)
+            .one(f.cache.get_conn())
             .await
             .unwrap()
             .unwrap();

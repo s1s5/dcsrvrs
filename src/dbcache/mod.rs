@@ -39,6 +39,8 @@ pub async fn run_server(
     size_limit: usize,
     capacity: usize,
     inmemory_cache: Option<Arc<InmemoryCache>>,
+    auto_evict: bool,
+    auto_reconnect_threshold: usize,
 ) -> Result<(Arc<DBCacheClient>, DBCacheDisposer), Box<dyn std::error::Error>> {
     let data_root = cache_dir.join("data");
     fs::create_dir_all(&data_root)?;
@@ -50,6 +52,7 @@ pub async fn run_server(
         &data_root,
         capacity,
         inmemory_cache.clone(),
+        auto_evict,
     )
     .await?;
 
@@ -57,9 +60,10 @@ pub async fn run_server(
         // let (tx, mut rx) = mpsc::channel(32);
         // stx.send(tx);
         // dbcache.run(&rx).await;ioutil
+        let mut counter = 1;
         debug!("dbcache server started");
         while let Some(task) = rx.recv().await {
-            info!("task: {:?}", task);
+            info!("[{counter}] task: {:?}", task);
             let start = std::time::Instant::now();
             let res = match task {
                 Task::Get(t) => {
@@ -117,12 +121,16 @@ pub async fn run_server(
                     )
                     .or_else(|t| t.map(|_| ()))
                 }
+                Task::ResetConnection(t) => {
+                    t.tx.send(dbcache.reset_connection().await)
+                        .or_else(|t| t.map(|_| ()))
+                }
                 Task::End(t) => {
                     t.tx.send(()).unwrap();
                     break;
                 }
             };
-            info!("elapsed_time: {:?}", start.elapsed());
+            info!("[{counter}] elapsed_time: {:?}", start.elapsed());
             match res {
                 Ok(_) => {}
                 Err(e) => {
@@ -130,6 +138,12 @@ pub async fn run_server(
                     // break;
                 }
             };
+            if auto_reconnect_threshold > 0 && counter % auto_reconnect_threshold == 0 {
+                if let Err(err) = dbcache.reset_connection().await {
+                    error!("failed to reconnect db. error={err:?}");
+                }
+            }
+            counter += 1;
         }
         debug!("dbcache server closed");
     });
@@ -179,7 +193,9 @@ mod tests {
     #[tokio::test]
     async fn test_set_get() {
         let f = TestFixture::new();
-        let (dbc, disposer) = run_server(f.get_path(), 32, 128, 128, None).await.unwrap();
+        let (dbc, disposer) = run_server(f.get_path(), 32, 128, 128, None, true, 0)
+            .await
+            .unwrap();
 
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
@@ -224,7 +240,9 @@ mod tests {
     async fn test_set_get_file() {
         let f = TestFixture::new();
         // let dbc = DBCache::new(&PathBuf::from(f.get_path()), 2).await.unwrap();
-        let (dbc, disposer) = run_server(f.get_path(), 2, 128, 128, None).await.unwrap();
+        let (dbc, disposer) = run_server(f.get_path(), 2, 128, 128, None, true, 0)
+            .await
+            .unwrap();
         let key = "some-key";
         let value = vec![0, 1, 2, 3];
         let headers = HashMap::new();
@@ -270,7 +288,9 @@ mod tests {
     async fn test_api() -> anyhow::Result<()> {
         let f = TestFixture::new();
 
-        let (dbc, disposer) = run_server(f.get_path(), 4, 32, 128, None).await.unwrap();
+        let (dbc, disposer) = run_server(f.get_path(), 4, 32, 128, None, true, 0)
+            .await
+            .unwrap();
 
         let stat = dbc.stat().await?;
         assert!(
