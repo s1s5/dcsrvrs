@@ -108,6 +108,41 @@ pub struct KeysTask {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
+pub struct EvictExpiredTask {
+    #[derivative(Debug = "ignore")]
+    pub tx: oneshot::Sender<Result<(usize, usize), Error>>,
+    pub page_size: u64,
+    pub max_iter: usize,
+}
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct EvictOldTask {
+    #[derivative(Debug = "ignore")]
+    pub tx: oneshot::Sender<Result<(usize, usize), Error>>,
+    pub goal_size: usize,
+    pub page_size: u64,
+    pub max_iter: usize,
+}
+
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct EvictAgedTask {
+    #[derivative(Debug = "ignore")]
+    pub tx: oneshot::Sender<Result<(usize, usize), Error>>,
+    pub store_time_lt: i64,
+    pub page_size: u64,
+    pub max_iter: usize,
+}
+
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct EvictTask {
+    #[derivative(Debug = "ignore")]
+    pub tx: oneshot::Sender<Result<(usize, usize), Error>>,
+}
+
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct ResetConnectionTask {
     #[derivative(Debug = "ignore")]
     pub tx: oneshot::Sender<Result<(), Error>>,
@@ -131,5 +166,9 @@ pub enum Task {
     FlushAll(FlushAllTask),
     Keys(KeysTask),
     ResetConnection(ResetConnectionTask),
+    EvictExpired(EvictExpiredTask),
+    EvictOld(EvictOldTask),
+    EvictAged(EvictAgedTask),
+    Evict(EvictTask),
     End(EndTask),
 }

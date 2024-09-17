@@ -291,6 +291,82 @@ impl DBCacheClient {
         }
     }
 
+    pub async fn evict_expired(
+        &self,
+        page_size: u64,
+        max_iter: usize,
+    ) -> Result<(usize, usize), Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::EvictExpired(EvictExpiredTask {
+                tx,
+                page_size,
+                max_iter,
+            }))
+            .await
+            .map_err(|_e| Error::SendError)?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
+
+    pub async fn evict_old(
+        &self,
+        goal_size: usize,
+        page_size: u64,
+        max_iter: usize,
+    ) -> Result<(usize, usize), Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::EvictOld(EvictOldTask {
+                tx,
+                goal_size,
+                page_size,
+                max_iter,
+            }))
+            .await
+            .map_err(|_e| Error::SendError)?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
+
+    pub async fn evict_aged(
+        &self,
+        store_time_lt: i64,
+        page_size: u64,
+        max_iter: usize,
+    ) -> Result<(usize, usize), Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::EvictAged(EvictAgedTask {
+                tx,
+                store_time_lt,
+                page_size,
+                max_iter,
+            }))
+            .await
+            .map_err(|_e| Error::SendError)?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
+
+    pub async fn evict(&self) -> Result<(usize, usize), Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::Evict(EvictTask { tx }))
+            .await
+            .map_err(|_e| Error::SendError)?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
+
     pub async fn keys(
         &self,
         max_num: i64,

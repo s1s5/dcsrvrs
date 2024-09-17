@@ -83,12 +83,13 @@ pub struct DBCache {
     entries: usize,
     size: usize,
     capacity: usize,
-    evict_interval: f64,
+    evict_interval: std::time::Duration,
     evict_threshold: f64,
     evicted_at: std::time::Instant,
     evicted_size: usize,
     inmemory: Option<Arc<InmemoryCache>>,
     auto_evict: bool,
+    max_age: i64,
 }
 
 async fn create_connection(db_path: &Path) -> Result<DatabaseConnection, Error> {
@@ -122,6 +123,7 @@ impl DBCache {
         capacity: usize,
         inmemory: Option<Arc<InmemoryCache>>,
         auto_evict: bool,
+        max_age: i64,
     ) -> Result<DBCache, Error> {
         debug!("creating dbcache instance");
         let conn = create_connection(db_path).await?;
@@ -149,12 +151,13 @@ impl DBCache {
             entries,
             size: size as usize,
             capacity,
-            evict_interval: 60.0,
+            evict_interval: std::time::Duration::from_secs_f64(300.0),
             evict_threshold: 0.8,
             evicted_at: std::time::Instant::now(),
             evicted_size: size as usize,
             inmemory,
             auto_evict,
+            max_age,
         })
     }
 
@@ -410,10 +413,17 @@ impl DBCache {
                     break 'outer;
                 }
             }
-            if max_iter == 1 {
-                break;
+            match max_iter {
+                0 => {
+                    // run forever
+                }
+                1 => {
+                    break;
+                }
+                _ => {
+                    max_iter -= 1;
+                }
             }
-            max_iter -= 1;
         }
         Ok((keys, deleted_files, deleted_size))
     }
@@ -438,9 +448,17 @@ impl DBCache {
         self.entries -= del_entries;
         self.size -= deleted_size;
 
+        debug!(
+            "del_entries={del_entries}, rows_effected={}, deleted_size={deleted_size}, num_files={}",
+            res.rows_affected,
+            deleted_files.len()
+        );
+
         for filename in deleted_files {
             match tokio::fs::remove_file(self.data_root.join(&filename)).await {
-                Ok(_) => {}
+                Ok(_) => {
+                    trace!("file {filename} removed.");
+                }
                 // ここでエラーで終了させてしまうと、DBの値が更新がself.sizeに反映できない
                 Err(e) => error!("failed to remove file {} with {:?}", filename, e),
             }
@@ -448,7 +466,11 @@ impl DBCache {
         Ok((res.rows_affected.try_into().unwrap(), deleted_size))
     }
 
-    async fn evict_expired(&mut self) -> Result<(usize, usize), Error> {
+    pub async fn evict_expired(
+        &mut self,
+        page_size: u64,
+        max_iter: usize,
+    ) -> Result<(usize, usize), Error> {
         let now = Local::now().timestamp();
         let (keys, files, size) = self
             .evict_rows_extract_keys(
@@ -460,16 +482,21 @@ impl DBCache {
                     .column(cache::Column::Size)
                     .column(cache::Column::Filename)
                     .into_model::<LimitedCacheRowWithFilename>()
-                    .paginate(self.get_conn(), 100),
+                    .paginate(self.get_conn(), page_size),
                 true,
                 self.capacity,
-                1,
+                max_iter,
             )
             .await?;
         self.evict_rows_delete(keys, files, size).await
     }
 
-    async fn evict_old(&mut self, goal_size: usize) -> Result<(usize, usize), Error> {
+    pub async fn evict_old(
+        &mut self,
+        goal_size: usize,
+        page_size: u64,
+        max_iter: usize,
+    ) -> Result<(usize, usize), Error> {
         let (keys, files, size) = self
             .evict_rows_extract_keys(
                 cache::Entity::find()
@@ -479,27 +506,58 @@ impl DBCache {
                     .column(cache::Column::Size)
                     .column(cache::Column::Filename)
                     .into_model::<LimitedCacheRowWithFilename>()
-                    .paginate(self.get_conn(), 100),
+                    .paginate(self.get_conn(), page_size),
                 false,
                 goal_size,
-                1,
+                max_iter,
             )
             .await?;
         self.evict_rows_delete(keys, files, size).await
     }
 
-    async fn evict(&mut self) -> Result<(usize, usize), Error> {
+    pub async fn evict_aged(
+        &mut self,
+        store_time_lt: i64,
+        page_size: u64,
+        max_iter: usize,
+    ) -> Result<(usize, usize), Error> {
+        let (keys, files, size) = self
+            .evict_rows_extract_keys(
+                cache::Entity::find()
+                    .order_by_asc(cache::Column::StoreTime)
+                    .filter(cache::Column::StoreTime.lt(store_time_lt))
+                    .select_only()
+                    .column(cache::Column::Key)
+                    .column(cache::Column::Size)
+                    .column(cache::Column::Filename)
+                    .into_model::<LimitedCacheRowWithFilename>()
+                    .paginate(self.get_conn(), page_size),
+                false,
+                0,
+                max_iter,
+            )
+            .await?;
+        self.evict_rows_delete(keys, files, size).await
+    }
+
+    pub async fn evict(&mut self) -> Result<(usize, usize), Error> {
         debug!("before evict entires={}, bytes={}", self.entries, self.size);
-        let (expired_entries, expired_size) = if (self.evicted_at
-            + std::time::Duration::from_secs_f64(self.evict_interval))
-            < std::time::Instant::now()
-        {
-            self.evict_expired().await?
-        } else {
-            (0, 0)
-        };
+        let ((expired_entries, expired_size), (aged_entries, aged_size)) =
+            if (self.evicted_at + self.evict_interval) < std::time::Instant::now() {
+                let expired_result = self.evict_expired(100, 1).await?;
+                let aged_result = if self.max_age > 0 {
+                    self.evict_aged(Local::now().timestamp() + self.max_age, 100, 1)
+                        .await?
+                } else {
+                    (0, 0)
+                };
+                self.evicted_at = std::time::Instant::now();
+                (expired_result, aged_result)
+            } else {
+                ((0, 0), (0, 0))
+            };
         debug!(
-            "after evict entires={}, bytes={}, expired.entries={expired_entries}, expired.bytes={expired_size}",
+            "after evict entires={}, bytes={}, expired.entries={expired_entries}, expired.bytes={expired_size}, aged.entries={aged_entries}, aged.size={aged_size}",
             self.entries,
             self.size,
         );
@@ -509,7 +567,7 @@ impl DBCache {
         } else {
             self.evicted_size = self.size;
             let goal_size = (self.evict_threshold * (self.capacity as f64)) as usize;
-            self.evict_old(goal_size).await?
+            self.evict_old(goal_size, 100, 1).await?
         };
         debug!(
             "after evict_old entires={}, bytes={}, old.entries={old_deleted_entries}, old.bytes={old_deleted_size}",
@@ -518,8 +576,8 @@ impl DBCache {
         );
 
         Ok((
-            expired_entries + old_deleted_entries,
-            expired_size + old_deleted_size,
+            expired_entries + aged_entries + old_deleted_entries,
+            expired_size + aged_size + old_deleted_size,
         ))
     }
 
@@ -649,6 +707,7 @@ mod tests {
                     capacity,
                     None,
                     true,
+                    0,
                 )
                 .await
                 .unwrap(),
@@ -819,6 +878,57 @@ mod tests {
             .unwrap();
         assert!(f.cache.get("C").await.unwrap().is_some());
         assert!(f.cache.get("D").await.unwrap().is_none());
+        assert!(f.cache.get("E").await.unwrap().is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_evict_aged() -> anyhow::Result<()> {
+        let mut f = TestFixture::new((13.0 / 0.8f64).ceil() as usize).await;
+        f.cache.auto_evict = false;
+        let value = vec![0, 1, 2, 3, 4, 5];
+        let headers = HashMap::new();
+        f.cache
+            .set_blob("A".into(), vec![], value.clone(), None, headers.clone())
+            .await?;
+        f.cache
+            .set_blob("B".into(), vec![], value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("C".into(), vec![], value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("D".into(), vec![], value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .evict_aged(Local::now().timestamp() + 1, 2, 1)
+            .await?;
+
+        assert!(f.cache.entries == 2);
+        assert!(f.cache.size == 12);
+        assert!(f.cache.get("A").await.unwrap().is_none());
+        assert!(f.cache.get("B").await.unwrap().is_none());
+        assert!(f.cache.get("C").await.unwrap().is_some());
+        assert!(f.cache.get("D").await.unwrap().is_some());
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let data = f.cache.get("C").await?;
+        assert!(data.is_some());
+
+        f.cache
+            .set_blob("E".into(), vec![], value.clone(), None, headers.clone())
+            .await
+            .unwrap();
+        f.cache
+            .evict_aged(Local::now().timestamp() + 1, 1, 1)
+            .await?;
+        assert!(f.cache.get("C").await.unwrap().is_none());
+        assert!(f.cache.get("D").await.unwrap().is_some());
         assert!(f.cache.get("E").await.unwrap().is_some());
 
         Ok(())

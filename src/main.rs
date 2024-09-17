@@ -13,6 +13,7 @@ use axum::{
     Extension, Router,
 };
 use clap::Parser;
+use dcsrvrs::dbcache::DBCacheServerBuilder;
 use dcsrvrs::util::normalize_path;
 use futures_util::TryStreamExt;
 use log::error;
@@ -22,7 +23,7 @@ use tokio::signal;
 use tracing::{debug, info};
 
 use dcsrvrs::{
-    dbcache::{run_server, DBCacheClient, KeyTaskResult},
+    dbcache::{DBCacheClient, KeyTaskResult},
     imcache::InmemoryCache,
 };
 
@@ -32,14 +33,14 @@ struct Config {
     #[arg(long, default_value = "/tmp/dcsrvrs-data")]
     cache_dir: String,
 
-    #[arg(long, default_value_t = 1u64 << 30)]
-    capacity: u64,
+    #[arg(long, default_value_t = 1usize << 30)]
+    capacity: usize,
 
     #[arg(long, default_value_t = 128 << 20 )]
-    file_size_limit: u64,
+    file_size_limit: usize,
 
     #[arg(long, default_value_t = 1 << 15)]
-    blob_threshold: u64,
+    blob_threshold: usize,
 
     #[arg(long, default_value_t = false)]
     disable_inmemory_cache: bool,
@@ -50,6 +51,9 @@ struct Config {
     #[arg(long, default_value_t = 1 << 20)]
     inmemory_bytes_per_chunk: usize,
 
+    #[arg(long, default_value_t = 1209600)] // 14days
+    max_age: i64,
+
     #[arg(long, default_value_t = 1 << 15)]
     inmemory_max_num_of_entries: usize,
 
@@ -57,7 +61,7 @@ struct Config {
     auto_reconnect_threshold: usize,
 
     #[arg(long, action)]
-    debug_disable_auto_evict: bool,
+    disable_auto_evict: bool,
 }
 
 fn path2key(path: PathBuf) -> PathBuf {
@@ -168,6 +172,48 @@ async fn healthcheck(
     }
 }
 
+#[derive(Serialize)]
+struct EvictResponse {
+    entries: usize,
+    num_bytes: usize,
+}
+
+#[derive(Serialize)]
+struct EvictResultAndServerStatus {
+    stat: ServerStatus,
+    evict: EvictResponse,
+}
+
+async fn evict_and_get_stat_(
+    client: &DBCacheClient,
+) -> Result<EvictResultAndServerStatus, dcsrvrs::dbcache::errors::Error> {
+    let e = client.evict().await?;
+    let s = client.stat().await?;
+    Ok(EvictResultAndServerStatus {
+        stat: ServerStatus {
+            entries: s.entries,
+            size: s.size,
+            capacity: s.capacity,
+        },
+        evict: EvictResponse {
+            entries: e.0,
+            num_bytes: e.1,
+        },
+    })
+}
+
+async fn evict_and_get_stat(
+    client: Extension<Arc<DBCacheClient>>,
+) -> Result<axum::Json<EvictResultAndServerStatus>, StatusCode> {
+    match evict_and_get_stat_(&client).await {
+        Ok(s) => Ok(axum::Json(s)),
+        Err(err) => {
+            error!("healthcheck error={err:?}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 async fn flushall(client: Extension<Arc<DBCacheClient>>) -> StatusCode {
     match client.flushall().await {
         Ok(r) => {
@@ -185,8 +231,98 @@ async fn reset_connection(client: Extension<Arc<DBCacheClient>>) -> StatusCode {
     match client.reset_connection().await {
         Ok(_) => StatusCode::OK,
         Err(err) => {
-            error!("flushall failed. error={err:?}");
+            error!("reset_connection failed. error={err:?}");
             StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct EvictExpiredParam {
+    page_size: Option<u64>,
+    max_iter: Option<usize>,
+}
+
+async fn evict_expired(
+    client: Extension<Arc<DBCacheClient>>,
+    extract::Json(payload): extract::Json<EvictExpiredParam>,
+) -> Result<axum::Json<EvictResponse>, StatusCode> {
+    match client
+        .evict_expired(
+            payload.page_size.unwrap_or(100),
+            payload.max_iter.unwrap_or(1),
+        )
+        .await
+    {
+        Ok((entries, num_bytes)) => Ok(axum::Json(EvictResponse { entries, num_bytes })),
+        Err(err) => {
+            error!("evict failed. error={err:?}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct EvictOldParam {
+    goal_size: Option<usize>,
+    page_size: Option<u64>,
+    max_iter: Option<usize>,
+}
+
+async fn evict_old(
+    client: Extension<Arc<DBCacheClient>>,
+    extract::Json(payload): extract::Json<EvictOldParam>,
+) -> Result<axum::Json<EvictResponse>, StatusCode> {
+    match client
+        .evict_old(
+            payload.goal_size.unwrap_or(0),
+            payload.page_size.unwrap_or(100),
+            payload.max_iter.unwrap_or(1),
+        )
+        .await
+    {
+        Ok((entries, num_bytes)) => Ok(axum::Json(EvictResponse { entries, num_bytes })),
+        Err(err) => {
+            error!("evict failed. error={err:?}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct EvictAgedParam {
+    store_time_lt: i64,
+    page_size: Option<u64>,
+    max_iter: Option<usize>,
+}
+
+async fn evict_aged(
+    client: Extension<Arc<DBCacheClient>>,
+    extract::Json(payload): extract::Json<EvictAgedParam>,
+) -> Result<axum::Json<EvictResponse>, StatusCode> {
+    match client
+        .evict_aged(
+            payload.store_time_lt,
+            payload.page_size.unwrap_or(100),
+            payload.max_iter.unwrap_or(1),
+        )
+        .await
+    {
+        Ok((entries, num_bytes)) => Ok(axum::Json(EvictResponse { entries, num_bytes })),
+        Err(err) => {
+            error!("evict failed. error={err:?}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+async fn evict(
+    client: Extension<Arc<DBCacheClient>>,
+) -> Result<axum::Json<EvictResponse>, StatusCode> {
+    match client.evict().await {
+        Ok((entries, num_bytes)) => Ok(axum::Json(EvictResponse { entries, num_bytes })),
+        Err(err) => {
+            error!("evict failed. error={err:?}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
 }
@@ -293,17 +429,17 @@ async fn main() -> anyhow::Result<()> {
             config.inmemory_max_num_of_entries,
         )))
     };
-    let (client, disposer) = run_server(
-        &PathBuf::from(&config.cache_dir),
-        config.blob_threshold.try_into().unwrap(),
-        config.file_size_limit.try_into().unwrap(),
-        config.capacity.try_into().unwrap(),
-        inmemory_cache,
-        !config.debug_disable_auto_evict,
-        config.auto_reconnect_threshold,
-    )
-    .await
-    .expect("failed to run cache server");
+    let (client, disposer) = DBCacheServerBuilder::new(&PathBuf::from(&config.cache_dir))
+        .blob_threshold(config.blob_threshold)
+        .size_limit(config.file_size_limit)
+        .capacity(config.capacity)
+        .inmemory_cache(inmemory_cache)
+        .auto_evict(!config.disable_auto_evict)
+        .auto_reconnect_threshold(config.auto_reconnect_threshold)
+        .max_age(config.max_age)
+        .build()
+        .await
+        .expect("failed to run cache server");
 
     let cors = tower_http::cors::CorsLayer::new()
         .allow_credentials(false)
@@ -315,6 +451,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/-/healthcheck/", get(healthcheck))
         .route("/-/flushall/", post(flushall))
         .route("/-/resetconnection/", post(reset_connection))
+        .route("/-/healthcheckwithevict/", get(evict_and_get_stat))
+        .route("/-/evictexpired/", post(evict_expired))
+        .route("/-/evictold/", post(evict_old))
+        .route("/-/evictaged/", post(evict_aged))
+        .route("/-/evict/", post(evict))
         .route("/-/keys/", post(keys))
         .layer(Extension(config))
         .layer(Extension(client))
