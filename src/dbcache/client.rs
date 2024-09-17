@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -22,7 +22,7 @@ pub struct DBCacheClient {
     size_limit: usize,
     data_root: PathBuf,
     tx: mpsc::Sender<Task>,
-    buf_list: Mutex<Vec<Vec<u8>>>,
+    buf_list: Mutex<VecDeque<Vec<u8>>>,
     inmemory: Option<Arc<InmemoryCache>>,
 }
 
@@ -39,14 +39,14 @@ impl DBCacheClient {
             size_limit,
             data_root: data_root.into(),
             tx,
-            buf_list: Mutex::new(Vec::new()),
+            buf_list: Mutex::new(VecDeque::new()),
             inmemory,
         }
     }
 
     async fn get_buf(&self) -> Vec<u8> {
         let mut buf_list = self.buf_list.lock().unwrap();
-        match buf_list.pop() {
+        match buf_list.pop_back() {
             Some(x) => x,
             None => {
                 vec![0; self.blob_threshold]
@@ -57,7 +57,7 @@ impl DBCacheClient {
     async fn del_buf(&self, buf: Vec<u8>) {
         let mut buf_list = self.buf_list.lock().unwrap();
         if buf_list.len() < 10 {
-            buf_list.push(buf)
+            buf_list.push_back(buf)
         }
     }
 
