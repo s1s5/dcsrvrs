@@ -152,7 +152,7 @@ impl DBCache {
             size: size as usize,
             capacity,
             evict_interval: std::time::Duration::from_secs_f64(300.0),
-            evict_threshold: 0.8,
+            evict_threshold: 0.999,
             evicted_at: std::time::Instant::now(),
             evicted_size: size as usize,
             inmemory,
@@ -567,7 +567,7 @@ impl DBCache {
         } else {
             self.evicted_size = self.size;
             let goal_size = (self.evict_threshold * (self.capacity as f64)) as usize;
-            self.evict_old(goal_size, 100, 1).await?
+            self.evict_old(goal_size, 1000, 10).await?
         };
         debug!(
             "after evict_old entires={}, bytes={}, old.entries={old_deleted_entries}, old.bytes={old_deleted_size}",
