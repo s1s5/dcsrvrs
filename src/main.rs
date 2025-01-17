@@ -237,6 +237,16 @@ async fn reset_connection(client: Extension<Arc<DBCacheClient>>) -> StatusCode {
     }
 }
 
+async fn vacuum(client: Extension<Arc<DBCacheClient>>) -> StatusCode {
+    match client.vacuum().await {
+        Ok(_) => StatusCode::OK,
+        Err(err) => {
+            error!("vacuum failed. error={err:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct EvictExpiredParam {
     page_size: Option<u64>,
@@ -451,6 +461,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/-/healthcheck/", get(healthcheck))
         .route("/-/flushall/", post(flushall))
         .route("/-/resetconnection/", post(reset_connection))
+        .route("/-/vacuum/", post(vacuum))
         .route("/-/healthcheckwithevict/", get(evict_and_get_stat))
         .route("/-/evictexpired/", post(evict_expired))
         .route("/-/evictold/", post(evict_old))

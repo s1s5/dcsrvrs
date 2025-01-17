@@ -291,6 +291,18 @@ impl DBCacheClient {
         }
     }
 
+    pub async fn vacuum(&self) -> Result<(), Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::Vacuum(VacuumTask { tx }))
+            .await
+            .map_err(|_e| Error::SendError)?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
+
     pub async fn evict_expired(
         &self,
         page_size: u64,

@@ -7,8 +7,9 @@ use log::error;
 use migration::{Condition, Migrator, MigratorTrait, Order};
 use sea_orm::entity::ModelTrait;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, Paginator,
-    PaginatorTrait, QueryFilter, QuerySelect, SelectModel, Set, SqlxSqliteConnector,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait,
+    FromQueryResult, Paginator, PaginatorTrait, QueryFilter, QuerySelect, SelectModel, Set,
+    SqlxSqliteConnector, Statement,
 };
 use sea_orm::{DbConn, QueryOrder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -675,6 +676,17 @@ impl DBCache {
             old_conn.close().await.map_err(Error::Db)?;
         }
         self._conn = Some(create_connection(&self.db_path).await?);
+        Ok(())
+    }
+
+    pub async fn vacuum(&mut self) -> Result<(), Error> {
+        self.get_conn()
+            .execute(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "VACUUM".to_string(),
+            ))
+            .await
+            .map_err(Error::Db)?;
         Ok(())
     }
 }

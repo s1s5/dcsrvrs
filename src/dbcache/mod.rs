@@ -176,6 +176,7 @@ impl DBCacheServerBuilder {
                         t.tx.send(dbcache.reset_connection().await)
                             .or_else(|t| t.map(|_| ()))
                     }
+                    Task::Vacuum(t) => t.tx.send(dbcache.vacuum().await).or_else(|t| t.map(|_| ())),
                     Task::EvictExpired(t) => {
                         t.tx.send(dbcache.evict_expired(t.page_size, t.max_iter).await)
                             .or_else(|t| t.map(|_| ()))
