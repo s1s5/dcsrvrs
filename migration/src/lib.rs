@@ -2,6 +2,7 @@ pub use sea_orm_migration::prelude::*;
 
 mod m20220101_000001_create_table;
 mod m20240915_080718_add_index;
+mod m20250117_025901_add_size_index;
 
 pub struct Migrator;
 
@@ -11,6 +12,7 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m20220101_000001_create_table::Migration),
             Box::new(m20240915_080718_add_index::Migration),
+            Box::new(m20250117_025901_add_size_index::Migration),
         ]
     }
 }
