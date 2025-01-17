@@ -673,6 +673,13 @@ impl DBCache {
 
     pub async fn reset_connection(&mut self) -> Result<(), Error> {
         if let Some(old_conn) = self._conn.take() {
+            old_conn
+                .execute(Statement::from_string(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    "PRAGMA wal_checkpoint(FULL);".to_string(),
+                ))
+                .await
+                .map_err(Error::Db)?;
             old_conn.close().await.map_err(Error::Db)?;
         }
         self._conn = Some(create_connection(&self.db_path).await?);
@@ -687,7 +694,7 @@ impl DBCache {
             ))
             .await
             .map_err(Error::Db)?;
-        Ok(())
+        self.reset_connection().await
     }
 }
 
