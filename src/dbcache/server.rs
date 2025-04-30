@@ -547,7 +547,7 @@ impl DBCache {
             if (self.evicted_at + self.evict_interval) < std::time::Instant::now() {
                 let expired_result = self.evict_expired(100, 1).await?;
                 let aged_result = if self.max_age > 0 {
-                    self.evict_aged(Local::now().timestamp() + self.max_age, 100, 1)
+                    self.evict_aged(Local::now().timestamp() - self.max_age, 100, 1)
                         .await?
                 } else {
                     (0, 0)
