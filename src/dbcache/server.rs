@@ -700,6 +700,8 @@ impl DBCache {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use tempfile::TempDir;
     use tokio::{
@@ -949,6 +951,49 @@ mod tests {
         assert!(f.cache.get("C").await.unwrap().is_none());
         assert!(f.cache.get("D").await.unwrap().is_some());
         assert!(f.cache.get("E").await.unwrap().is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_evict_aged_2() -> anyhow::Result<()> {
+        let mut f = TestFixture::new((100.0f64).ceil() as usize).await;
+        f.cache.auto_evict = false;
+        let value = vec![0, 1, 2, 3, 4, 5];
+        let headers = HashMap::new();
+        f.cache
+            .set_blob("A".into(), vec![], value.clone(), None, headers.clone())
+            .await?;
+        f.cache
+            .set_blob("B".into(), vec![], value.clone(), None, headers.clone())
+            .await?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        f.cache
+            .set_blob("C".into(), vec![], value.clone(), None, headers.clone())
+            .await?;
+
+        f.cache
+            .set_blob("D".into(), vec![], value.clone(), None, headers.clone())
+            .await?;
+
+        assert!(f.cache.entries == 4);
+        assert!(f.cache.size == 24);
+        assert!(f.cache.get("A").await.unwrap().is_some());
+        assert!(f.cache.get("B").await.unwrap().is_some());
+        assert!(f.cache.get("C").await.unwrap().is_some());
+        assert!(f.cache.get("D").await.unwrap().is_some());
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        f.cache.evict_interval = std::time::Duration::default();
+        f.cache.max_age = 1;
+        f.cache.evict().await?;
+
+        assert!(f.cache.entries == 2);
+        assert!(f.cache.size == 12);
+        assert!(f.cache.get("A").await.unwrap().is_none());
+        assert!(f.cache.get("B").await.unwrap().is_none());
+        assert!(f.cache.get("C").await.unwrap().is_some());
+        assert!(f.cache.get("D").await.unwrap().is_some());
 
         Ok(())
     }
