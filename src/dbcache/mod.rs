@@ -198,6 +198,14 @@ impl DBCacheServerBuilder {
                         .or_else(|t| t.map(|_| ()))
                     }
                     Task::Evict(t) => t.tx.send(dbcache.evict().await).or_else(|t| t.map(|_| ())),
+                    Task::ResetStat(t) => {
+                        t.tx.send(dbcache.reset_stat().await.map(|_| Stat {
+                            entries: dbcache.entries(),
+                            size: dbcache.size(),
+                            capacity: dbcache.capacity(),
+                        }))
+                        .or_else(|t| t.map(|_| ()))
+                    }
                     Task::End(t) => {
                         t.tx.send(()).unwrap();
                         break;

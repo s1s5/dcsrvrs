@@ -1,3 +1,5 @@
+#![allow(clippy::needless_lifetimes)]
+
 use std::collections::HashMap;
 
 use super::errors::Error;
@@ -157,6 +159,13 @@ pub struct VacuumTask {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
+pub struct ResetStatTask {
+    #[derivative(Debug = "ignore")]
+    pub tx: oneshot::Sender<Result<Stat, Error>>,
+}
+
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct EndTask {
     #[derivative(Debug = "ignore")]
     pub tx: oneshot::Sender<()>,
@@ -178,5 +187,6 @@ pub enum Task {
     EvictOld(EvictOldTask),
     EvictAged(EvictAgedTask),
     Evict(EvictTask),
+    ResetStat(ResetStatTask),
     End(EndTask),
 }

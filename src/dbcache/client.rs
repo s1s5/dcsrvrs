@@ -379,6 +379,18 @@ impl DBCacheClient {
         }
     }
 
+    pub async fn reset_stat(&self) -> Result<Stat, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::ResetStat(ResetStatTask { tx }))
+            .await
+            .map_err(|_e| Error::SendError)?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
+
     pub async fn keys(
         &self,
         max_num: i64,

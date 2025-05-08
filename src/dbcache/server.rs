@@ -7,9 +7,9 @@ use log::error;
 use migration::{Condition, Migrator, MigratorTrait, Order};
 use sea_orm::entity::ModelTrait;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait,
-    FromQueryResult, Paginator, PaginatorTrait, QueryFilter, QuerySelect, SelectModel, Set,
-    SqlxSqliteConnector, Statement,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, DeleteResult,
+    EntityTrait, FromQueryResult, Paginator, PaginatorTrait, QueryFilter, QuerySelect, SelectModel,
+    Set, SqlxSqliteConnector, Statement, TransactionTrait,
 };
 use sea_orm::{DbConn, QueryOrder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -21,12 +21,6 @@ use tracing::{debug, trace};
 #[derive(FromQueryResult)]
 struct LimitedCacheRow {
     size: i64,
-}
-
-#[derive(FromQueryResult)]
-struct SumOfSizeCacheRow {
-    count: i64,
-    sum_of_size: Option<i64>,
 }
 
 #[derive(FromQueryResult)]
@@ -81,8 +75,7 @@ pub struct DBCache {
     db_path: PathBuf,
     _conn: Option<DbConn>,
     data_root: PathBuf,
-    entries: usize,
-    size: usize,
+    stat: entity::meta::Stat,
     capacity: usize,
     evict_interval: std::time::Duration,
     evict_threshold: f64,
@@ -104,6 +97,7 @@ async fn create_connection(db_path: &Path) -> Result<DatabaseConnection, Error> 
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal);
 
+    debug!("creating connection pool");
     let sqlite_pool = SqlitePoolOptions::new()
         .max_connections(10)
         .connect_with(connection_options)
@@ -111,6 +105,8 @@ async fn create_connection(db_path: &Path) -> Result<DatabaseConnection, Error> 
         .map_err(|err| Error::Other(format!("connection failed {err:?}")))?;
 
     let conn = SqlxSqliteConnector::from_sqlx_sqlite_pool(sqlite_pool);
+
+    debug!("applying pending migrations");
     Migrator::up(&conn, None)
         .await
         .expect("Failed to run migrations");
@@ -129,51 +125,46 @@ impl DBCache {
         debug!("creating dbcache instance");
         let conn = create_connection(db_path).await?;
 
-        debug!("getting all entries");
-        let stat = cache::Entity::find()
-            .select_only()
-            .column_as(cache::Column::Key.count(), "count")
-            .column_as(cache::Column::Size.sum(), "sum_of_size")
-            .into_model::<SumOfSizeCacheRow>()
-            .all(&conn)
+        let stat = entity::meta::get_stat(&conn)
             .await
-            .expect("Failed to get stats");
-        if stat.len() != 1 {
-            panic!("Unexpected Error");
-        }
-        let entries = stat[0].count as usize;
-        let size = stat[0].sum_of_size.unwrap_or(0);
-        debug!("num_entries={entries}, size={size}[bytes]");
+            .map_err(|err| Error::Other(format!("failed to get stat {err:?}")))?;
+        debug!(
+            "num_entries={}, size={}[bytes]",
+            stat.num_of_entries, stat.total_size
+        );
 
         Ok(DBCache {
             db_path: db_path.into(),
             _conn: Some(conn),
             data_root: data_root.into(),
-            entries,
-            size: size as usize,
             capacity,
             evict_interval: std::time::Duration::from_secs_f64(300.0),
             evict_threshold: 0.999,
             evicted_at: std::time::Instant::now(),
-            evicted_size: size as usize,
+            evicted_size: stat.total_size as usize,
             inmemory,
             auto_evict,
             max_age,
+            stat,
         })
     }
 
+    #[inline(always)]
     pub fn entries(&self) -> usize {
-        self.entries
+        self.stat.num_of_entries as usize
     }
 
+    #[inline(always)]
     pub fn size(&self) -> usize {
-        self.size
+        self.stat.total_size as usize
     }
 
+    #[inline(always)]
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
+    #[inline(always)]
     fn get_conn(&self) -> &DbConn {
         self._conn.as_ref().unwrap()
     }
@@ -276,7 +267,9 @@ impl DBCache {
         };
         debug!(
             "old_size:{} entries={}, bytes={}",
-            old_size, self.entries, self.size
+            old_size,
+            self.entries(),
+            self.size()
         );
 
         let now: DateTime<Utc> = Utc::now();
@@ -292,17 +285,33 @@ impl DBCache {
             attr: Set(Some(bincode::serialize(&arg.headers).unwrap())),
         };
 
-        if old_size < 0 {
-            self.entries += 1;
-            self.size += arg.size as usize;
-            trace!("insert: {:?}", c);
-            c.insert(self.get_conn()).await.map_err(Error::Db)?;
-        } else {
-            self.size = ((self.size as i64) + arg.size - old_size) as usize;
-            trace!("update: {:?}", c);
-            c.update(self.get_conn()).await.map_err(Error::Db)?;
-        }
-        debug!("after insert entries={}, bytes={}", self.entries, self.size);
+        let mut stat = self.stat.clone();
+        self.stat = self
+            .get_conn()
+            .transaction::<_, entity::meta::Stat, DbErr>(move |txn| {
+                Box::pin(async move {
+                    if old_size < 0 {
+                        stat.num_of_entries += 1;
+                        stat.total_size += arg.size;
+                        trace!("insert: {:?}", c);
+                        c.insert(txn).await?;
+                    } else {
+                        stat.total_size = stat.total_size - old_size + arg.size;
+                        trace!("update: {:?}", c);
+                        c.update(txn).await?;
+                    }
+                    entity::meta::insert_or_delete_entries(txn, stat).await
+                })
+            })
+            .await
+            .map_err(Into::<Error>::into)?;
+
+        debug!(
+            "after insert entries={}, bytes={}",
+            self.entries(),
+            self.size()
+        );
+
         Ok(())
     }
 
@@ -371,20 +380,38 @@ impl DBCache {
             .map_err(Error::Db)?;
         Ok(match c {
             Some(x) => {
-                self.entries -= 1;
-                self.size -= x.size as usize;
+                let data_root = self.data_root.clone();
+                let mut stat = self.stat.clone();
+                let (s, new_stat) = self
+                    .get_conn()
+                    .transaction::<_, (u64, entity::meta::Stat), Error>(move |txn| {
+                        Box::pin(async move {
+                            stat.num_of_entries -= 1;
+                            stat.total_size -= x.size;
 
-                let filename = x.filename.clone();
-                let s = x
-                    .delete(self.get_conn())
+                            let filename = x.filename.clone();
+                            let s = x.delete(txn).await.map_err(Error::Db)?.rows_affected;
+                            if let Some(filename) = filename {
+                                tokio::fs::remove_file(data_root.join(filename))
+                                    .await
+                                    .map_err(Error::Io)?;
+                            }
+
+                            Ok((
+                                s,
+                                entity::meta::insert_or_delete_entries(txn, stat)
+                                    .await
+                                    .map_err(Error::Db)?,
+                            ))
+                        })
+                    })
                     .await
-                    .map_err(Error::Db)?
-                    .rows_affected;
-                if let Some(filename) = filename {
-                    tokio::fs::remove_file(self.data_root.join(filename))
-                        .await
-                        .map_err(Error::Io)?;
-                }
+                    .map_err(|err| match err {
+                        sea_orm::TransactionError::Connection(err) => Error::Db(err),
+                        sea_orm::TransactionError::Transaction(err) => err,
+                    })?;
+
+                self.stat = new_stat;
                 s
             }
             None => 0,
@@ -410,7 +437,7 @@ impl DBCache {
                     deleted_files.push(e.filename.unwrap());
                 }
 
-                if (!delete_all) && (goal_size + deleted_size >= self.size) {
+                if (!delete_all) && (goal_size + deleted_size >= self.size()) {
                     break 'outer;
                 }
             }
@@ -440,14 +467,29 @@ impl DBCache {
         }
         let del_entries = keys.len();
 
-        let res = cache::Entity::delete_many()
-            .filter(cache::Column::Key.is_in(keys))
-            .exec(self.get_conn())
-            .await
-            .map_err(Error::Db)?;
+        let mut stat = self.stat.clone();
 
-        self.entries -= del_entries;
-        self.size -= deleted_size;
+        let (res, new_stat) = self
+            .get_conn()
+            .transaction::<_, (DeleteResult, entity::meta::Stat), DbErr>(move |txn| {
+                Box::pin(async move {
+                    stat.num_of_entries -= del_entries as i64;
+                    stat.total_size -= deleted_size as i64;
+
+                    let res = cache::Entity::delete_many()
+                        .filter(cache::Column::Key.is_in(keys))
+                        .exec(txn)
+                        .await?;
+                    Ok((
+                        res,
+                        entity::meta::insert_or_delete_entries(txn, stat).await?,
+                    ))
+                })
+            })
+            .await
+            .map_err(Into::<Error>::into)?;
+
+        self.stat = new_stat;
 
         debug!(
             "del_entries={del_entries}, rows_effected={}, deleted_size={deleted_size}, num_files={}",
@@ -542,7 +584,11 @@ impl DBCache {
     }
 
     pub async fn evict(&mut self) -> Result<(usize, usize), Error> {
-        debug!("before evict entires={}, bytes={}", self.entries, self.size);
+        debug!(
+            "before evict entires={}, bytes={}",
+            self.entries(),
+            self.size()
+        );
         let ((expired_entries, expired_size), (aged_entries, aged_size)) =
             if (self.evicted_at + self.evict_interval) < std::time::Instant::now() {
                 let expired_result = self.evict_expired(100, 1).await?;
@@ -559,21 +605,21 @@ impl DBCache {
             };
         debug!(
             "after evict entires={}, bytes={}, expired.entries={expired_entries}, expired.bytes={expired_size}, aged.entries={aged_entries}, aged.size={aged_size}",
-            self.entries,
-            self.size,
+            self.entries(),
+            self.size(),
         );
 
-        let (old_deleted_entries, old_deleted_size) = if self.size < self.capacity {
+        let (old_deleted_entries, old_deleted_size) = if self.size() < self.capacity {
             (0, 0)
         } else {
-            self.evicted_size = self.size;
+            self.evicted_size = self.size();
             let goal_size = (self.evict_threshold * (self.capacity as f64)) as usize;
             self.evict_old(goal_size, 1000, 10).await?
         };
         debug!(
             "after evict_old entires={}, bytes={}, old.entries={old_deleted_entries}, old.bytes={old_deleted_size}",
-            self.entries,
-            self.size
+            self.entries(),
+            self.size()
         );
 
         Ok((
@@ -582,11 +628,18 @@ impl DBCache {
         ))
     }
 
+    pub async fn reset_stat(&mut self) -> Result<(), Error> {
+        self.stat = entity::meta::reset_stat(self.get_conn())
+            .await
+            .map_err(Error::Db)?;
+        Ok(())
+    }
+
     pub async fn flushall(&mut self) -> Result<(usize, usize), Error> {
         let mut deleted_entries = 0;
         let mut deleted_size = 0;
         loop {
-            if self.size == 0 {
+            if self.size() == 0 {
                 break;
             }
 
@@ -749,8 +802,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(f.cache.entries == 1);
-        assert!(f.cache.size == 4);
+        assert!(f.cache.entries() == 1);
+        assert!(f.cache.size() == 4);
 
         // dbに登録されているか
         let r = cache::Entity::find()
@@ -782,8 +835,8 @@ mod tests {
 
         f.cache.del(key).await.unwrap();
 
-        assert!(f.cache.entries == 0);
-        assert!(f.cache.size == 0);
+        assert!(f.cache.entries() == 0);
+        assert!(f.cache.size() == 0);
 
         assert!(f.cache.get(key).await.unwrap().is_none());
     }
@@ -819,8 +872,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(f.cache.entries == 1);
-        assert!(f.cache.size == 4);
+        assert!(f.cache.entries() == 1);
+        assert!(f.cache.size() == 4);
 
         // databaseに値が登録されているか
         let r = cache::Entity::find()
@@ -855,8 +908,8 @@ mod tests {
         f.cache.del(key).await.unwrap();
         assert!(!abs_path.exists());
 
-        assert!(f.cache.entries == 0);
-        assert!(f.cache.size == 0);
+        assert!(f.cache.entries() == 0);
+        assert!(f.cache.size() == 0);
 
         assert!(f.cache.get(key).await.unwrap().is_none());
     }
@@ -881,8 +934,8 @@ mod tests {
             .set_blob("D".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
-        assert!(f.cache.entries == 2);
-        assert!(f.cache.size == 12);
+        assert!(f.cache.entries() == 2);
+        assert!(f.cache.size() == 12);
         assert!(f.cache.get("A").await.unwrap().is_none());
         assert!(f.cache.get("B").await.unwrap().is_none());
         assert!(f.cache.get("C").await.unwrap().is_some());
@@ -929,8 +982,8 @@ mod tests {
             .evict_aged(Local::now().timestamp() + 1, 2, 1)
             .await?;
 
-        assert!(f.cache.entries == 2);
-        assert!(f.cache.size == 12);
+        assert!(f.cache.entries() == 2);
+        assert!(f.cache.size() == 12);
         assert!(f.cache.get("A").await.unwrap().is_none());
         assert!(f.cache.get("B").await.unwrap().is_none());
         assert!(f.cache.get("C").await.unwrap().is_some());
@@ -976,8 +1029,8 @@ mod tests {
             .set_blob("D".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
-        assert!(f.cache.entries == 4);
-        assert!(f.cache.size == 24);
+        assert!(f.cache.entries() == 4);
+        assert!(f.cache.size() == 24);
         assert!(f.cache.get("A").await.unwrap().is_some());
         assert!(f.cache.get("B").await.unwrap().is_some());
         assert!(f.cache.get("C").await.unwrap().is_some());
@@ -988,8 +1041,8 @@ mod tests {
         f.cache.max_age = 1;
         f.cache.evict().await?;
 
-        assert!(f.cache.entries == 2);
-        assert!(f.cache.size == 12);
+        assert!(f.cache.entries() == 2);
+        assert!(f.cache.size() == 12);
         assert!(f.cache.get("A").await.unwrap().is_none());
         assert!(f.cache.get("B").await.unwrap().is_none());
         assert!(f.cache.get("C").await.unwrap().is_some());
@@ -1019,13 +1072,13 @@ mod tests {
             .set_blob("D".into(), vec![], value.clone(), None, headers.clone())
             .await?;
 
-        assert!(f.cache.entries == 2);
-        assert!(f.cache.size == 12);
+        assert!(f.cache.entries() == 2);
+        assert!(f.cache.size() == 12);
 
         f.cache.flushall().await?;
 
-        assert!(f.cache.entries == 0);
-        assert!(f.cache.size == 0);
+        assert!(f.cache.entries() == 0);
+        assert!(f.cache.size() == 0);
 
         Ok(())
     }

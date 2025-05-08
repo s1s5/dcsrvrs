@@ -1,4 +1,4 @@
-use sea_orm::DbErr;
+use sea_orm::{DbErr, TransactionError};
 use tokio::sync::oneshot;
 
 #[derive(Debug, Clone)]
@@ -43,5 +43,14 @@ impl std::error::Error for Error {
         // Generic error, underlying cause isn't tracked.
         // 基本となるエラー、原因は記録されていない。
         None
+    }
+}
+
+impl From<TransactionError<DbErr>> for Error {
+    fn from(e: TransactionError<DbErr>) -> Self {
+        match e {
+            TransactionError::Connection(e) => Error::Db(e),
+            TransactionError::Transaction(e) => Error::Db(e),
+        }
     }
 }

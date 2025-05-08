@@ -325,11 +325,28 @@ async fn evict_aged(
         }
     }
 }
+
 async fn evict(
     client: Extension<Arc<DBCacheClient>>,
 ) -> Result<axum::Json<EvictResponse>, StatusCode> {
     match client.evict().await {
         Ok((entries, num_bytes)) => Ok(axum::Json(EvictResponse { entries, num_bytes })),
+        Err(err) => {
+            error!("evict failed. error={err:?}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn reset_stat(
+    client: Extension<Arc<DBCacheClient>>,
+) -> Result<axum::Json<ServerStatus>, StatusCode> {
+    match client.reset_stat().await {
+        Ok(s) => Ok(axum::Json(ServerStatus {
+            entries: s.entries,
+            size: s.size,
+            capacity: s.capacity,
+        })),
         Err(err) => {
             error!("evict failed. error={err:?}");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -467,6 +484,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/-/evictold/", post(evict_old))
         .route("/-/evictaged/", post(evict_aged))
         .route("/-/evict/", post(evict))
+        .route("/-/resetstat/", post(reset_stat))
         .route("/-/keys/", post(keys))
         .layer(Extension(config))
         .layer(Extension(client))
