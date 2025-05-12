@@ -14,9 +14,17 @@ use sea_orm::{
 use sea_orm::{DbConn, QueryOrder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, trace};
+
+#[derive(Debug, Default)]
+pub struct DbStat {
+    pub db_size: usize,
+    pub db_shm_size: usize,
+    pub db_wal_size: usize,
+}
 
 #[derive(FromQueryResult)]
 struct LimitedCacheRow {
@@ -162,6 +170,32 @@ impl DBCache {
     #[inline(always)]
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    pub async fn get_db_size(&self) -> Result<DbStat, Error> {
+        let db_path = self
+            .db_path
+            .as_os_str()
+            .to_str()
+            .ok_or(Error::Other("invalid db_path".to_string()))?
+            .to_string();
+        Ok(DbStat {
+            db_size: tokio::fs::metadata(&db_path)
+                .await
+                .map(|x| x.size() as usize)
+                .ok()
+                .unwrap_or(0),
+            db_wal_size: tokio::fs::metadata(format!("{db_path}-wal"))
+                .await
+                .map(|x| x.size() as usize)
+                .ok()
+                .unwrap_or(0),
+            db_shm_size: tokio::fs::metadata(format!("{db_path}-shm"))
+                .await
+                .map(|x| x.size() as usize)
+                .ok()
+                .unwrap_or(0),
+        })
     }
 
     #[inline(always)]
@@ -860,7 +894,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_get() {
+    async fn test_set_get() -> anyhow::Result<()> {
         let mut f = TestFixture::new(1024).await;
 
         let key = "some-key";
@@ -886,6 +920,9 @@ mod tests {
         assert!(r.filename.is_none());
         assert!(r.value.unwrap().len() == 4);
 
+        let _stat = f.cache.get_db_size().await?;
+        // println!("stat => {_stat:?}");
+
         // dbcache経由での値の取得
         let r = f.cache.get(key).await.unwrap().unwrap();
         match r.into_inner() {
@@ -908,6 +945,8 @@ mod tests {
         assert!(f.cache.size() == 0);
 
         assert!(f.cache.get(key).await.unwrap().is_none());
+
+        Ok(())
     }
 
     #[tokio::test]

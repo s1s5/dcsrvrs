@@ -154,6 +154,9 @@ struct ServerStatus {
     entries: usize,
     size: usize,
     capacity: usize,
+    db_size: usize,
+    db_shm_size: usize,
+    db_wal_size: usize,
 }
 
 async fn healthcheck(
@@ -164,6 +167,9 @@ async fn healthcheck(
             entries: s.entries,
             size: s.size,
             capacity: s.capacity,
+            db_size: s.db_size,
+            db_shm_size: s.db_shm_size,
+            db_wal_size: s.db_wal_size,
         })),
         Err(err) => {
             error!("healthcheck error={err:?}");
@@ -194,6 +200,9 @@ async fn evict_and_get_stat_(
             entries: s.entries,
             size: s.size,
             capacity: s.capacity,
+            db_size: s.db_size,
+            db_shm_size: s.db_shm_size,
+            db_wal_size: s.db_wal_size,
         },
         evict: EvictResponse {
             entries: e.0,
@@ -346,6 +355,9 @@ async fn reset_stat(
             entries: s.entries,
             size: s.size,
             capacity: s.capacity,
+            db_size: s.db_size,
+            db_shm_size: s.db_shm_size,
+            db_wal_size: s.db_wal_size,
         })),
         Err(err) => {
             error!("evict failed. error={err:?}");

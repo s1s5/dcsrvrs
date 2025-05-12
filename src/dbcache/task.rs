@@ -67,6 +67,9 @@ pub struct Stat {
     pub entries: usize,
     pub size: usize,
     pub capacity: usize,
+    pub db_size: usize,
+    pub db_shm_size: usize,
+    pub db_wal_size: usize,
 }
 
 #[derive(Derivative)]

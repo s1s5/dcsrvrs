@@ -153,10 +153,14 @@ impl DBCacheServerBuilder {
                             .or_else(|t| t.map(|_| ()))
                     }
                     Task::Stat(t) => {
+                        let db_size = dbcache.get_db_size().await.unwrap_or_default();
                         t.tx.send(Ok(Stat {
                             entries: dbcache.entries(),
                             size: dbcache.size(),
                             capacity: dbcache.capacity(),
+                            db_size: db_size.db_size,
+                            db_wal_size: db_size.db_wal_size,
+                            db_shm_size: db_size.db_shm_size,
                         }))
                         .or_else(|t| t.map(|_| ()))
                     }
@@ -199,10 +203,14 @@ impl DBCacheServerBuilder {
                     }
                     Task::Evict(t) => t.tx.send(dbcache.evict().await).or_else(|t| t.map(|_| ())),
                     Task::ResetStat(t) => {
+                        let db_size = dbcache.get_db_size().await.unwrap_or_default();
                         t.tx.send(dbcache.reset_stat().await.map(|_| Stat {
                             entries: dbcache.entries(),
                             size: dbcache.size(),
                             capacity: dbcache.capacity(),
+                            db_size: db_size.db_size,
+                            db_wal_size: db_size.db_wal_size,
+                            db_shm_size: db_size.db_shm_size,
                         }))
                         .or_else(|t| t.map(|_| ()))
                     }
@@ -400,13 +408,8 @@ mod tests {
             .unwrap();
 
         let stat = dbc.stat().await?;
-        assert!(
-            stat == Stat {
-                entries: 0,
-                size: 0,
-                capacity: 128
-            }
-        );
+        assert!(stat.entries == 0 && stat.size == 0 && stat.capacity == 128);
+
         let data = vec![0, 1, 2, 3];
         dbc.set(
             "blobv",
@@ -422,23 +425,11 @@ mod tests {
         assert!(keys[0].key == *"blobv");
 
         let stat = dbc.stat().await?;
-        assert!(
-            stat == Stat {
-                entries: 1,
-                size: 4,
-                capacity: 128
-            }
-        );
+        assert!(stat.entries == 1 && stat.size == 4 && stat.capacity == 128);
 
         dbc.flushall().await?;
         let stat = dbc.stat().await?;
-        assert!(
-            stat == Stat {
-                entries: 0,
-                size: 0,
-                capacity: 128
-            }
-        );
+        assert!(stat.entries == 0 && stat.size == 0 && stat.capacity == 128);
 
         disposer.dispose().await.unwrap();
 
