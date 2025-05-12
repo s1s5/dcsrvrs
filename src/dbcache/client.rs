@@ -391,6 +391,22 @@ impl DBCacheClient {
         }
     }
 
+    pub async fn remove_orphan(&self, prefix: u8, dry_run: bool) -> Result<usize, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Task::RemoveOrphan(RemoveOrphanTask {
+                prefix,
+                dry_run,
+                tx,
+            }))
+            .await
+            .map_err(|_e| Error::SendError)?;
+        match rx.await {
+            Ok(r) => r,
+            Err(e) => Err(Error::RecvError(e)),
+        }
+    }
+
     pub async fn keys(
         &self,
         max_num: i64,

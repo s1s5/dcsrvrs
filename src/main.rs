@@ -355,6 +355,30 @@ async fn reset_stat(
 }
 
 #[derive(Deserialize)]
+struct RemoveOrphanArg {
+    prefix: u8,
+    dry_run: bool,
+}
+
+#[derive(Serialize)]
+struct RemoveOrphanResponse {
+    removed: usize,
+}
+
+async fn remove_orphan(
+    client: Extension<Arc<DBCacheClient>>,
+    extract::Json(arg): extract::Json<RemoveOrphanArg>,
+) -> Result<axum::Json<RemoveOrphanResponse>, StatusCode> {
+    match client.remove_orphan(arg.prefix, arg.dry_run).await {
+        Ok(r) => Ok(axum::Json(RemoveOrphanResponse { removed: r })),
+        Err(err) => {
+            error!("remove_orphan failed. error={err:?}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct GetKeyArg {
     max_num: i64,
     key: Option<String>,
@@ -485,6 +509,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/-/evictaged/", post(evict_aged))
         .route("/-/evict/", post(evict))
         .route("/-/resetstat/", post(reset_stat))
+        .route("/-/removeorphan/", post(remove_orphan))
         .route("/-/keys/", post(keys))
         .layer(Extension(config))
         .layer(Extension(client))

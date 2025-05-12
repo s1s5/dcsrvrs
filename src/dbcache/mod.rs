@@ -206,6 +206,10 @@ impl DBCacheServerBuilder {
                         }))
                         .or_else(|t| t.map(|_| ()))
                     }
+                    Task::RemoveOrphan(t) => {
+                        t.tx.send(dbcache.remove_orphan(t.prefix, t.dry_run).await)
+                            .or_else(|t| t.map(|_| ()))
+                    }
                     Task::End(t) => {
                         t.tx.send(()).unwrap();
                         break;

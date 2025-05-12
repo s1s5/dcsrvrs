@@ -166,6 +166,15 @@ pub struct ResetStatTask {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
+pub struct RemoveOrphanTask {
+    pub prefix: u8,
+    pub dry_run: bool,
+    #[derivative(Debug = "ignore")]
+    pub tx: oneshot::Sender<Result<usize, Error>>,
+}
+
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct EndTask {
     #[derivative(Debug = "ignore")]
     pub tx: oneshot::Sender<()>,
@@ -188,5 +197,6 @@ pub enum Task {
     EvictAged(EvictAgedTask),
     Evict(EvictTask),
     ResetStat(ResetStatTask),
+    RemoveOrphan(RemoveOrphanTask),
     End(EndTask),
 }

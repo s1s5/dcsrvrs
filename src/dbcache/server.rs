@@ -724,6 +724,75 @@ impl DBCache {
         Ok(data.into_iter().map(|e| e.into()).collect())
     }
 
+    pub async fn remove_orphan(&mut self, prefix: u8, dry_run: bool) -> Result<usize, Error> {
+        let prefix = format!("{:02x}", prefix);
+        let mut files = cache::Entity::find()
+            .filter(cache::Column::Filename.is_not_null())
+            .filter(cache::Column::Filename.starts_with(&prefix))
+            .select_only()
+            .column(cache::Column::Key)
+            .column(cache::Column::Size)
+            .column(cache::Column::Filename)
+            .into_model::<LimitedCacheRowWithFilename>()
+            .all(self.get_conn())
+            .await
+            .map_err(Error::Db)?
+            .into_iter()
+            .filter_map(|x| x.filename.clone().map(|filename| (filename, x)))
+            .filter_map(|(filename, x)| filename.split('/').nth(1).map(|y| (y.to_string(), x)))
+            .collect::<HashMap<String, _>>();
+
+        let mut entries = match tokio::fs::read_dir(self.data_root.join(&prefix)).await {
+            Ok(entries) => entries,
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(0);
+                } else {
+                    return Err(Error::Io(err));
+                }
+            }
+        };
+
+        let mut deleted = 0;
+        while let Some(entry) = entries.next_entry().await.map_err(Error::Io)? {
+            if let Some(filename) = entry
+                .path()
+                .file_name()
+                .and_then(|x| x.to_str())
+                .map(|x| x.to_string())
+            {
+                if files.remove(&filename).is_some() {
+                    log::trace!("found {}", entry.path().display());
+                } else {
+                    log::debug!("remove {}", entry.path().display());
+                    deleted += 1;
+                    if !dry_run {
+                        tokio::fs::remove_file(entry.path())
+                            .await
+                            .map_err(Error::Io)?;
+                    }
+                }
+            }
+        }
+
+        deleted += files.len();
+        for (filename, m) in &files {
+            log::warn!("key={}, file={} not found", m.key, filename);
+        }
+        if !dry_run {
+            cache::Entity::delete_many()
+                .filter(
+                    cache::Column::Key
+                        .is_in(files.into_values().map(|x| x.key).collect::<Vec<String>>()),
+                )
+                .exec(self.get_conn())
+                .await
+                .map_err(Error::Db)?;
+        }
+
+        Ok(deleted)
+    }
+
     pub async fn reset_connection(&mut self) -> Result<(), Error> {
         if let Some(old_conn) = self._conn.take() {
             old_conn
@@ -1079,6 +1148,99 @@ mod tests {
 
         assert!(f.cache.entries() == 0);
         assert!(f.cache.size() == 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_remove_orphan() -> anyhow::Result<()> {
+        let mut f = TestFixture::new((13.0 / 0.8f64).ceil() as usize).await;
+
+        let key = "some-key";
+        let abs_path = f.cache.data_root.join("00/some-filename");
+        fs::create_dir_all(&abs_path.parent().unwrap()).await?;
+        tokio::fs::write(&abs_path, b"hello").await?;
+
+        let headers = HashMap::new();
+        f.cache
+            .set_file(
+                key.into(),
+                4,
+                vec![],
+                abs_path
+                    .strip_prefix(&f.cache.data_root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .into(),
+                None,
+                headers,
+            )
+            .await
+            .unwrap();
+
+        let key2 = "some-key-2";
+        let abs_path2 = f.cache.data_root.join("00/some-filename-2");
+        tokio::fs::write(&abs_path2, b"world").await?;
+
+        let headers = HashMap::new();
+        f.cache
+            .set_file(
+                key2.into(),
+                4,
+                vec![],
+                abs_path2
+                    .strip_prefix(&f.cache.data_root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .into(),
+                None,
+                headers,
+            )
+            .await
+            .unwrap();
+
+        let key3 = "some-key-3";
+        let abs_path3 = f.cache.data_root.join("01/some-filename-3");
+        fs::create_dir_all(&abs_path3.parent().unwrap()).await?;
+        tokio::fs::write(&abs_path3, b"world").await?;
+
+        let headers = HashMap::new();
+        f.cache
+            .set_file(
+                key3.into(),
+                4,
+                vec![],
+                abs_path3
+                    .strip_prefix(&f.cache.data_root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .into(),
+                None,
+                headers,
+            )
+            .await
+            .unwrap();
+
+        let path =
+            PathBuf::from(f.tempdir.path()).join("data/00/00a8eefb-f5e3-4ecb-bdc0-31909b261b5f");
+        tokio::fs::write(&path, b"hello").await?;
+
+        assert_eq!(1, f.cache.remove_orphan(0, true).await?);
+        assert!(tokio::fs::try_exists(&path).await?);
+
+        assert_eq!(1, f.cache.remove_orphan(0, false).await?);
+        assert!(!tokio::fs::try_exists(&path).await?);
+
+        tokio::fs::remove_file(&abs_path).await?;
+        assert_eq!(1, f.cache.remove_orphan(0, true).await?);
+        assert_eq!(1, f.cache.remove_orphan(0, false).await?);
+        assert_eq!(0, f.cache.remove_orphan(0, false).await?);
+
+        assert!(tokio::fs::try_exists(&abs_path2).await?);
+        assert!(f.cache.get(key2).await?.is_some());
 
         Ok(())
     }
