@@ -104,13 +104,14 @@ async fn put_data(
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
     let mut data = tokio_util::io::StreamReader::new(data);
 
+    let headers = dcsrvrs::headers::Headers::from(headers);
     match client
         .set(
             &key,
             // Pin::new(&mut data.open(config.file_size_limit.bytes())),
             Pin::new(&mut data),
-            None,
-            dcsrvrs::headers::Headers::from(headers).0,
+            headers.expire_time,
+            headers.headers,
         )
         .await
     {
