@@ -32,7 +32,25 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx-indexes-access_time")
+                    .table(Cache::Table)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx-indexes-store_time-key")
+                    .table(Cache::Table)
+                    .to_owned(),
+            )
+            .await?;
+
         Ok(())
     }
 }
